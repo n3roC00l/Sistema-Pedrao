@@ -1,139 +1,140 @@
-# Sistema Pedrão — Painel de Orçamentos e Pedidos
+# Sistema Pedrão — Painel de Operações
 
-> Sistema de controle e rastreabilidade do pipeline de vendas e execução de projetos, desenvolvido para o **Pedro (Diretor de Operações)**.
+> Painel interno de gestão do pipeline comercial e execução de projetos da **Cilla Tech Park** — empresa de esquadrias, fachadas e coberturas metálicas.
 
----
-
-## O que é este sistema
-
-O **Sistema Pedrão** é um painel interativo de gestão operacional que centraliza todos os orçamentos e pedidos da empresa em um único lugar. Ele foi construído para dar ao Pedro visibilidade total sobre:
-
-- Quais propostas estão em negociação e em qual etapa
-- Quais pedidos estão em execução ou já foram entregues
-- Quanto cada projeto custa em matéria-prima e qual é a margem bruta real
-- A separação clara entre **Clientes Diretos** (empresas e pessoas físicas) e **Prefeituras** (órgãos públicos licitantes), que possuem dinâmicas e riscos distintos
+Desenvolvido para o **Pedro (Diretor de Operações)**. O objetivo é decisão rápida: o que precisa de aprovação, o que está travado, quanto está ganhando de verdade, o que perdeu e por quê.
 
 ---
 
-## Para que serve
-
-| Necessidade do Pedro | Como o sistema resolve |
-|---|---|
-| Saber quais orçamentos precisam da sua aprovação | Filtro por status `Orçamento aguardando aprovação Pedro` |
-| Acompanhar pedidos em andamento | Filtro por status `Pedido em execução` |
-| Comparar performance entre Clientes Diretos e Prefeituras | Abas isoladas com KPIs por segmento |
-| Rastrear custo de insumos por projeto | Aba "Matéria-Prima" com detalhamento item a item |
-| Entender por que orçamentos foram perdidos | Aba "Recusados" com campo obrigatório de motivo |
-| Analisar o pipeline por período | Filtro de intervalo de datas no sidebar |
-
----
-
-## Stack tecnológica
+## Stack
 
 | Camada | Tecnologia |
 |---|---|
-| Banco de dados | SQLite (arquivo local `orcamentos.db`) |
-| Manipulação de dados | Pandas |
-| Dashboard interativo | Streamlit |
+| Banco de dados | SQLite (`orcamentos.db`) |
+| Dados | Pandas |
+| Dashboard | Streamlit ≥ 1.35 |
+| Gráficos | Plotly |
 | Linguagem | Python 3.10+ |
+
+---
+
+## Como rodar
+
+```bash
+git clone https://github.com/n3roC00l/Sistema-Pedrao.git
+cd Sistema-Pedrao
+pip install -r requirements.txt
+streamlit run app.py
+```
+
+Acesse `http://localhost:8501`. O banco SQLite é criado e populado automaticamente na primeira execução — nenhuma configuração manual necessária.
+
+Para rodar em segundo plano:
+
+```bash
+nohup streamlit run app.py --server.port 8501 --server.headless true > streamlit.log 2>&1 &
+```
 
 ---
 
 ## Estrutura do projeto
 
 ```
-pedro_dashboard/
-├── database.py        # Schema SQLite, seed de dados e conexão
-├── app.py             # Dashboard Streamlit (interface principal)
-├── demo_filtros.py    # Demonstração CLI de todos os filtros disponíveis
-├── requirements.txt   # Dependências Python
-├── .gitignore         # Exclui .db e cache do versionamento
-└── README.md          # Este arquivo
+Sistema-Pedrao/
+├── app.py              # UI principal (Streamlit)
+├── metrics.py          # KPIs e lógica financeira — fonte de verdade única
+├── database.py         # Schema v2, migração automática e seed
+├── requirements.txt    # Dependências
+├── DIAGNOSTICO.md      # Relatório técnico da refatoração
+├── .streamlit/
+│   └── config.toml     # Tema e configurações do Streamlit
+└── orcamentos.db       # Banco SQLite (gerado automaticamente)
 ```
 
 ---
 
-## Schema do banco de dados
+## KPIs do painel
 
-Tabela `orcamentos`:
+### Linha comercial
+| KPI | Definição |
+|---|---|
+| **Pipeline Aberto** | Valor total em negociação (não decidido) |
+| **Valor Ganho** | Soma dos orçamentos aprovados + pedidos em andamento/entregues |
+| **Valor Perdido** | Soma dos orçamentos recusados (nunca entra em margem) |
+| **Negócios Parados** | Itens em aberto sem mudança de status há mais de 30 dias |
 
+### Linha de rentabilidade
+| KPI | Definição |
+|---|---|
+| **Margem Bruta** | Valor ganho − custo de MP dos negócios ganhos |
+| **Margem %** | Margem bruta ÷ valor ganho |
+| **Win Rate (valor)** | Valor ganho ÷ (ganho + perdido) |
+| **Ticket Médio Ganho** | Valor ganho ÷ número de negócios ganhos |
+
+> **Regra fundamental:** margem bruta e margem % incidem somente sobre o estágio **Ganho**. Orçamentos perdidos ou em aberto nunca entram no cálculo de margem.
+
+---
+
+## Funil de status
+
+```
+Orçamento gerado  ──────────────────────────────── ABERTO
+Orçamento aguardando aprovação Pedro  ──────────── ABERTO
+Orçamento aguardando aprovação cliente  ────────── ABERTO
+    │
+    ├── Orçamento aprovado  ──────────────────────── GANHO
+    │       └── Pedido gerado
+    │               └── Pedido em execução
+    │                       └── Pedido entregue
+    │
+    └── Orçamento recusado  ───────────────────── PERDIDO
+```
+
+---
+
+## Schema do banco (v2)
+
+### `orcamentos`
 | Campo | Tipo | Descrição |
 |---|---|---|
 | `id` | INTEGER PK | Identificador único |
-| `data_orcamento` | TEXT (DATE) | Data de criação do orçamento |
-| `tipo_cliente` | TEXT (ENUM) | `"Cliente Direto"` ou `"Prefeitura"` |
-| `nome_cliente` | TEXT | Nome da empresa ou órgão público |
-| `descritivo_produto` | TEXT | Escopo completo do projeto orçado |
-| `valor_total` | REAL | Valor total do orçamento em R$ |
-| `materia_prima_json` | TEXT (JSON) | Lista de insumos com item e valor individual |
-| `custo_total_mp` | REAL | Soma calculada dos custos de matéria-prima |
-| `status` | TEXT (ENUM) | Etapa atual do orçamento/pedido (ver abaixo) |
-| `motivo_recusa` | TEXT (nullable) | Preenchido obrigatoriamente quando recusado |
+| `data_orcamento` | TEXT (DATE) | Data de criação |
+| `tipo_cliente` | TEXT CHECK | `"Cliente Direto"` ou `"Prefeitura"` |
+| `nome_cliente` | TEXT | Empresa ou órgão |
+| `descritivo_produto` | TEXT | Escopo do projeto |
+| `valor_total` | REAL | Valor em R$ |
+| `custo_total_mp` | REAL | Soma dos itens de MP (denormalizado) |
+| `status` | TEXT CHECK | Enum — 8 valores válidos |
+| `motivo_recusa` | TEXT | Preenchido quando recusado |
 
-### Status disponíveis (fluxo linear)
+### `itens_materia_prima`
+Relação 1:N com `orcamentos`. Cada insumo é um registro: `orcamento_id`, `descricao_item`, `valor`.
 
-```
-Orçamento gerado
-    └─► Orçamento aguardando aprovação Pedro
-            └─► Orçamento aguardando aprovação cliente
-                    ├─► Orçamento aprovado
-                    │       └─► Pedido gerado
-                    │               └─► Pedido em execução
-                    │                       └─► Pedido entregue
-                    └─► Orçamento recusado  (exige motivo_recusa)
-```
+### `historico_status`
+Rastreabilidade de mudanças: `orcamento_id`, `status`, `timestamp`, `responsavel`. Viabiliza o cálculo de aging.
+
+> Bancos no schema v1 (com `materia_prima_json`) são migrados automaticamente na primeira inicialização — sem perda de dados.
 
 ---
 
-## Como rodar localmente
+## Segmentos de cliente
 
-**1. Clone o repositório**
-```bash
-git clone https://github.com/n3roC00l/Sistema-Pedrao.git
-cd Sistema-Pedrao
-```
+- **Cliente Direto** — empresas e pessoas físicas, dinâmica comercial padrão
+- **Prefeitura** — órgãos públicos licitantes, processo e risco distintos
 
-**2. Instale as dependências**
-```bash
-pip install -r requirements.txt
-```
-
-**3. Suba o dashboard**
-```bash
-streamlit run app.py
-```
-
-Acesse `http://localhost:8501` no navegador. O banco SQLite é criado e populado automaticamente na primeira execução.
-
-**Opcional — demonstração dos filtros via terminal:**
-```bash
-python demo_filtros.py
-```
-
----
-
-## Filtros disponíveis no dashboard
-
-- **Status** — qualquer combinação dos 8 status do pipeline
-- **Tipo de Cliente** — visão isolada para Prefeituras ou Clientes Diretos
-- **Intervalo de datas** — corte por período (útil para fechamento mensal/trimestral)
-- **Busca textual** — pesquisa livre por nome de cliente ou descritivo do produto
-
-Os KPIs (valor total, custo de MP, margem bruta e pipeline ativo) recalculam automaticamente conforme os filtros são aplicados.
+Cada segmento tem aba própria com KPIs isolados (margem, win rate, valor por órgão).
 
 ---
 
 ## Próximos passos sugeridos
 
-- [ ] Tela de cadastro/edição de orçamentos diretamente pelo Streamlit
-- [ ] Exportação para Excel (`.xlsx`) via botão no dashboard
-- [ ] Histórico de mudanças de status com timestamp e usuário responsável
-- [ ] Autenticação por usuário (Pedro vs. equipe comercial vs. leitura)
-- [ ] Alertas automáticos para orçamentos parados há mais de X dias
-- [ ] Integração com sistema de NF-e para reconciliação de custos reais de MP
+- [ ] Tela de cadastro e edição de orçamentos no próprio Streamlit
+- [ ] Exportação para Excel via botão no painel
+- [ ] Autenticação (Pedro vs. equipe comercial vs. leitura)
+- [ ] Integração com NF-e para reconciliação de custos reais de MP
 
 ---
 
 ## Licença
 
-Uso interno. Todos os direitos reservados.
+Uso interno — Cilla Tech Park. Todos os direitos reservados.
