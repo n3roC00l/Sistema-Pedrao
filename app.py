@@ -8,7 +8,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from database import DB_PATH, STATUS_VALIDOS, TIPO_CLIENTE_VALIDOS, inicializar
+from database import DB_PATH, STATUS_VALIDOS, TIPO_CLIENTE_VALIDOS, inicializar, inserir_orcamento
 from metrics import (
     AGING_ALERTA_DIAS,
     COR_ESTAGIO,
@@ -153,6 +153,107 @@ hr { border-color: #1E293B !important; }
 """, unsafe_allow_html=True)
 
 
+# ── Formulário: novo orçamento ────────────────────────────────────────────────
+
+@st.dialog("Novo Orçamento", width="large")
+def dialog_novo_orcamento() -> None:
+    if "_mp" not in st.session_state:
+        st.session_state["_mp"] = [{"item": "", "valor": 0.0}]
+
+    from datetime import date
+
+    col_a, col_b = st.columns(2)
+    data_orc = col_a.date_input(
+        "Data do orçamento", value=date.today(), format="DD/MM/YYYY"
+    )
+    tipo = col_b.selectbox("Tipo de cliente", TIPO_CLIENTE_VALIDOS)
+
+    nome = st.text_input("Cliente / Órgão", placeholder="Ex: Construtora XYZ Ltda")
+    descritivo = st.text_area(
+        "Descritivo do produto / serviço",
+        placeholder="Descreva o escopo do projeto orçado…",
+        height=90,
+    )
+
+    col_v, col_s = st.columns(2)
+    valor = col_v.number_input(
+        "Valor total (R$)", min_value=0.01, step=1000.0, format="%.2f"
+    )
+    status_ini = col_s.selectbox(
+        "Status inicial",
+        STATUS_VALIDOS,
+        index=0,
+    )
+
+    motivo = None
+    if status_ini == "Orçamento recusado":
+        motivo = st.text_area("Motivo da recusa", placeholder="Descreva o motivo…")
+
+    st.markdown("**Itens de Matéria-Prima**")
+    itens = st.session_state["_mp"]
+    for i, it in enumerate(itens):
+        c1, c2, c3 = st.columns([4, 2, 1])
+        itens[i]["item"]  = c1.text_input("Insumo",    value=it["item"],  key=f"_mp_n{i}", label_visibility="collapsed", placeholder=f"Insumo {i+1}")
+        itens[i]["valor"] = c2.number_input("Valor R$", value=it["valor"], key=f"_mp_v{i}", label_visibility="collapsed", min_value=0.0, step=500.0, format="%.2f")
+        if c3.button("✕", key=f"_mp_r{i}", help="Remover", disabled=len(itens) == 1):
+            itens.pop(i)
+            st.rerun()
+
+    custo_atual = sum(i["valor"] for i in itens if i["valor"] > 0)
+    col_add, col_custo = st.columns([1, 2])
+    col_add.button(
+        "+ Adicionar insumo",
+        on_click=lambda: st.session_state["_mp"].append({"item": "", "valor": 0.0}),
+    )
+    if custo_atual > 0:
+        margem_prev = valor - custo_atual if valor > 0 else 0
+        cor = "#10B981" if margem_prev >= 0 else "#EF4444"
+        col_custo.markdown(
+            f'<div style="text-align:right;padding-top:8px;font-size:0.82rem;color:#94A3B8">'
+            f'Custo MP: <b style="color:#F1F5F9">{format_brl(custo_atual)}</b> &nbsp;·&nbsp; '
+            f'Margem prévia: <b style="color:{cor}">{format_brl(margem_prev)}</b>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+    st.divider()
+
+    erros = []
+    if not nome.strip():
+        erros.append("Informe o nome do cliente.")
+    if not descritivo.strip():
+        erros.append("Informe o descritivo do produto.")
+    if valor <= 0:
+        erros.append("Valor total deve ser maior que zero.")
+    if status_ini == "Orçamento recusado" and not (motivo or "").strip():
+        erros.append("Motivo da recusa é obrigatório quando o status é Recusado.")
+
+    col_btn, col_aviso = st.columns([1, 3])
+    salvar = col_btn.button("Salvar", type="primary", width="stretch")
+
+    if salvar:
+        if erros:
+            for e in erros:
+                st.error(e)
+        else:
+            mp_validos = [i for i in itens if i["item"].strip() and i["valor"] > 0]
+            if not mp_validos:
+                st.warning("Nenhum item de MP válido — o custo ficará zerado.")
+            inserir_orcamento(
+                data_orcamento   = str(data_orc),
+                tipo_cliente     = tipo,
+                nome_cliente     = nome.strip(),
+                descritivo_produto = descritivo.strip(),
+                valor_total      = valor,
+                status           = status_ini,
+                motivo_recusa    = motivo,
+                mp_itens         = itens,
+            )
+            st.cache_data.clear()
+            del st.session_state["_mp"]
+            st.rerun()
+
+
 # ── Funções de carregamento ───────────────────────────────────────────────────
 
 @st.cache_data(ttl=30)
@@ -282,6 +383,12 @@ def grafico_tipo_cliente(df: pd.DataFrame) -> go.Figure:
 with st.sidebar:
     st.markdown("### Cilla Tech Park")
     st.markdown('<div style="color:#C2892B;font-size:0.75rem;margin-top:-12px;margin-bottom:16px;letter-spacing:0.05em">PAINEL DE OPERAÇÕES</div>', unsafe_allow_html=True)
+
+    if st.button("＋ Novo Orçamento", width="stretch", type="primary"):
+        if "_mp" in st.session_state:
+            del st.session_state["_mp"]
+        dialog_novo_orcamento()
+
     st.divider()
 
     df_raw = carregar_dados()
@@ -311,7 +418,7 @@ with st.sidebar:
     busca = st.text_input("Buscar", placeholder="Cliente, órgão ou produto…")
 
     st.divider()
-    if st.button("↺ Recarregar dados", use_container_width=True):
+    if st.button("↺ Recarregar dados", width="stretch"):
         st.cache_data.clear()
         st.rerun()
 
@@ -471,7 +578,7 @@ def tabela_orcamentos(frame: pd.DataFrame, key: str, mostrar_aging: bool = True)
         ),
     }
 
-    st.dataframe(exibir, use_container_width=True, hide_index=True, column_config=col_cfg, key=key)
+    st.dataframe(exibir, width="stretch", hide_index=True, column_config=col_cfg, key=key)
 
 
 # ── Aba: Visão Geral ──────────────────────────────────────────────────────────
@@ -479,9 +586,9 @@ def tabela_orcamentos(frame: pd.DataFrame, key: str, mostrar_aging: bool = True)
 with aba_visao:
     col_g1, col_g2 = st.columns([3, 2])
     with col_g1:
-        st.plotly_chart(grafico_pipeline(df), use_container_width=True)
+        st.plotly_chart(grafico_pipeline(df), width="stretch")
     with col_g2:
-        st.plotly_chart(grafico_tipo_cliente(df), use_container_width=True)
+        st.plotly_chart(grafico_tipo_cliente(df), width="stretch")
 
     # Legenda de cores semânticas
     st.markdown(
@@ -547,7 +654,7 @@ with aba_pref:
         por_pref["Margem %"] = por_pref["Margem_Pct"].map(lambda v: format_pct(v))
         por_pref.drop(columns=["Margem_Pct"], inplace=True)
 
-        st.dataframe(por_pref, use_container_width=True, hide_index=True)
+        st.dataframe(por_pref, width="stretch", hide_index=True)
 
     st.divider()
     tabela_orcamentos(df_pref, key="tab_pref")
@@ -580,7 +687,7 @@ with aba_cli:
         por_cli["Margem %"] = por_cli["Margem_Pct"].map(lambda v: format_pct(v))
         por_cli.drop(columns=["Margem_Pct"], inplace=True)
 
-        st.dataframe(por_cli, use_container_width=True, hide_index=True)
+        st.dataframe(por_cli, width="stretch", hide_index=True)
 
     st.divider()
     tabela_orcamentos(df_cli, key="tab_cli")
@@ -617,7 +724,7 @@ with aba_mp:
         top_mp["Valor Total"] = top_mp["Valor Total"].map(format_brl)
 
         with st.expander("Top 10 insumos por valor total na carteira", expanded=False):
-            st.dataframe(top_mp, use_container_width=True, hide_index=True)
+            st.dataframe(top_mp, width="stretch", hide_index=True)
 
         st.divider()
 
@@ -648,7 +755,7 @@ with aba_mp:
                     itens_df = grupo[["descricao_item", "valor_item"]].copy()
                     itens_df["valor_item"] = itens_df["valor_item"].map(format_brl)
                     itens_df.columns = ["Insumo", "Valor"]
-                    st.dataframe(itens_df, use_container_width=True, hide_index=True)
+                    st.dataframe(itens_df, width="stretch", hide_index=True)
                 with cb:
                     st.metric("Valor Orçamento", format_brl(row0["valor_total"]))
                     st.metric("Custo MP", format_brl(row0["custo_total_mp"]))

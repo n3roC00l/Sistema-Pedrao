@@ -395,6 +395,51 @@ def _popular_banco(conn: sqlite3.Connection) -> int:
     return inseridos
 
 
+# ── Operações de escrita ─────────────────────────────────────────────────────
+
+def inserir_orcamento(
+    data_orcamento: str,
+    tipo_cliente: str,
+    nome_cliente: str,
+    descritivo_produto: str,
+    valor_total: float,
+    status: str,
+    motivo_recusa: str | None,
+    mp_itens: list[dict],  # [{"item": str, "valor": float}, ...]
+) -> int:
+    """Insere um novo orçamento e retorna o id gerado."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    mp_validos = [i for i in mp_itens if i.get("item", "").strip() and i.get("valor", 0) > 0]
+    custo_total_mp = sum(i["valor"] for i in mp_validos)
+
+    cursor.execute("""
+        INSERT INTO orcamentos
+            (data_orcamento, tipo_cliente, nome_cliente, descritivo_produto,
+             valor_total, custo_total_mp, status, motivo_recusa)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (data_orcamento, tipo_cliente, nome_cliente, descritivo_produto,
+          valor_total, custo_total_mp, status, motivo_recusa or None))
+
+    oid = cursor.lastrowid
+
+    for item in mp_validos:
+        cursor.execute("""
+            INSERT INTO itens_materia_prima (orcamento_id, descricao_item, valor)
+            VALUES (?, ?, ?)
+        """, (oid, item["item"].strip(), item["valor"]))
+
+    cursor.execute("""
+        INSERT INTO historico_status (orcamento_id, status, timestamp)
+        VALUES (?, ?, datetime('now', 'localtime'))
+    """, (oid, status))
+
+    conn.commit()
+    conn.close()
+    return oid
+
+
 # ── Inicialização pública ─────────────────────────────────────────────────────
 
 def inicializar() -> sqlite3.Connection:
