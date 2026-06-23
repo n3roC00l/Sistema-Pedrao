@@ -5,8 +5,9 @@ Diretor: Pedro | Executar: streamlit run app.py
 import sqlite3
 from pathlib import Path
 
+import base64
+import json
 import pandas as pd
-import plotly.graph_objects as go
 import streamlit as st
 import streamlit.components.v1 as components
 import streamlit_authenticator as stauth
@@ -38,6 +39,7 @@ from metrics import (
     classificar_estagio,
     format_brl,
     format_pct,
+    montar_contrato_graficos,
 )
 
 # ── Configuração da página ────────────────────────────────────────────────────
@@ -704,68 +706,18 @@ def badge_status(status: str) -> str:
     return f'<span class="badge {cls}">{status}</span>'
 
 
-def plotly_base_layout(**kwargs) -> dict:
-    return {
-        "paper_bgcolor": "#0A0B0F",
-        "plot_bgcolor":  "#15171D",
-        "font": {"color": "#F2F4F8", "family": "Inter, system-ui, sans-serif"},
-        "margin": {"l": 10, "r": 150, "t": 30, "b": 10},
-        **kwargs,
-    }
+_CHARTS_TPL = (Path(__file__).parent / "assets" / "charts_neon.html").read_text(encoding="utf-8")
 
 
-def grafico_pipeline(df: pd.DataFrame) -> go.Figure:
-    """Barras horizontais do funil: ordem canônica de cima p/ baixo, cores semânticas."""
-    status_vals = df.groupby("status")["valor_total"].sum().reset_index()
-    status_vals["estagio"] = status_vals["status"].map(classificar_estagio)
-    status_vals["ordem"] = status_vals["status"].map(
-        {s: i for i, s in enumerate(ORDEM_STATUS)}
+def _charts_iframe_src(data: dict, modo_calmo: bool, prev_total: float) -> str:
+    html = (
+        _CHARTS_TPL
+        .replace("__DATA__",        json.dumps(data, ensure_ascii=False))
+        .replace("__MODO_CALMO__",  "true" if modo_calmo else "false")
+        .replace("__PREV_TOTAL__",  json.dumps(prev_total))
     )
-    # Ordem decrescente para que o primeiro status canônico apareça no topo
-    status_vals = status_vals.sort_values("ordem", ascending=False)
-    status_vals = status_vals[status_vals["valor_total"] > 0]
-
-    cores = status_vals["estagio"].map(COR_ESTAGIO).tolist()
-    textos = [format_brl(v) for v in status_vals["valor_total"]]
-
-    fig = go.Figure(go.Bar(
-        x=status_vals["valor_total"],
-        y=status_vals["status"],
-        orientation="h",
-        marker_color=cores,
-        text=textos,
-        textposition="outside",
-        textfont={"size": 11, "color": "#9AA3B2"},
-        hovertemplate="<b>%{y}</b><br>%{text}<extra></extra>",
-        cliponaxis=False,
-    ))
-    fig.update_layout(
-        **plotly_base_layout(height=320),
-        xaxis={"showgrid": False, "showticklabels": False, "zeroline": False, "range": [0, status_vals["valor_total"].max() * 1.45]},
-        yaxis={"gridcolor": "#15171D", "tickfont": {"size": 11}},
-        title={"text": "Valor por Estágio do Funil", "font": {"size": 13, "color": "#9AA3B2"}},
-        bargap=0.4,
-    )
-    return fig
-
-
-def grafico_tipo_cliente(df: pd.DataFrame) -> go.Figure:
-    por_tipo = df.groupby("tipo_cliente")["valor_total"].sum().reset_index()
-    fig = go.Figure(go.Pie(
-        labels=por_tipo["tipo_cliente"],
-        values=por_tipo["valor_total"],
-        hole=0.52,
-        marker_colors=["#7DD3FC", "#9AA3B2"],  # categórico — nunca limão nem verde de ganho
-        textinfo="label+percent",
-        textfont={"size": 11},
-        hovertemplate="<b>%{label}</b><br>R$ %{value:,.0f}<extra></extra>",
-    ))
-    fig.update_layout(
-        **plotly_base_layout(height=320),
-        showlegend=False,
-        title={"text": "Valor por Tipo de Cliente", "font": {"size": 13, "color": "#9AA3B2"}},
-    )
-    return fig
+    b64 = base64.b64encode(html.encode("utf-8")).decode()
+    return f"data:text/html;charset=utf-8;base64,{b64}"
 
 
 # ── KPI iframe — CSS e JS (strings fixas; sem f-string para evitar escape) ───
@@ -1010,14 +962,19 @@ pipeline_pond = calcular_pipeline_ponderado(df)
 n_ag          = kpis["n_aging_alertas"]
 
 # Cabeçalho
-st.markdown(
-    '<h1 style="font-size:1.5rem;font-weight:700;color:#F2F4F8;margin-bottom:2px">'
-    'Painel de Operações</h1>'
-    '<div style="color:#626B7A;font-size:0.8rem;margin-bottom:16px">'
-    f'Cilla Tech Park · {len(df)} de {len(df_raw)} registros · atualizado a cada 30s'
-    '</div>',
-    unsafe_allow_html=True,
-)
+_hcol, _tcol = st.columns([5, 1])
+with _hcol:
+    st.markdown(
+        '<h1 style="font-size:1.5rem;font-weight:700;color:#F2F4F8;margin-bottom:2px">'
+        'Painel de Operações</h1>'
+        '<div style="color:#626B7A;font-size:0.8rem;margin-bottom:16px">'
+        f'Cilla Tech Park · {len(df)} de {len(df_raw)} registros · atualizado a cada 30s'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+with _tcol:
+    modo_calmo = st.toggle("Modo calmo", value=False, key="modo_calmo",
+                           help="Desliga animações dos gráficos")
 
 # ── Faixa de KPIs via components.html ─────────────────────────────────────────
 # Controles de animação:
@@ -1242,21 +1199,10 @@ def tabela_orcamentos(frame: pd.DataFrame, key: str, mostrar_aging: bool = True)
 # ── Aba: Visão Geral ──────────────────────────────────────────────────────────
 
 with aba_visao:
-    col_g1, col_g2 = st.columns([3, 2])
-    with col_g1:
-        st.plotly_chart(grafico_pipeline(df), width="stretch")
-    with col_g2:
-        st.plotly_chart(grafico_tipo_cliente(df), width="stretch")
-
-    # Legenda de cores semânticas
-    st.markdown(
-        '<div style="display:flex;gap:20px;margin-top:4px;margin-bottom:16px">'
-        '<span><span style="color:#7DD3FC">●</span> <span style="color:#626B7A;font-size:0.78rem">Em aberto</span></span>'
-        '<span><span style="color:#34D399">●</span> <span style="color:#626B7A;font-size:0.78rem">Ganho</span></span>'
-        '<span><span style="color:#F87171">●</span> <span style="color:#626B7A;font-size:0.78rem">Perdido</span></span>'
-        '</div>',
-        unsafe_allow_html=True,
-    )
+    _prev_total = st.session_state.get("charts_prev_total", 0.0)
+    _charts_data = montar_contrato_graficos(df)
+    st.iframe(_charts_iframe_src(_charts_data, modo_calmo, _prev_total), height=390)
+    st.session_state["charts_prev_total"] = _charts_data["total_carteira"]
 
     # Alertas de aging
     df_alertas = df[(df["estagio"] == "aberto") & (df["aging_dias"] > AGING_ALERTA_DIAS)]

@@ -106,12 +106,66 @@ def calcular_custo_vs_realizado(df: pd.DataFrame) -> dict:
     return {"orcado": orcado, "realizado": realizado, "delta": delta, "delta_pct": delta_pct, "n": len(entregues)}
 
 
+def montar_contrato_graficos(df: pd.DataFrame) -> dict:
+    """Monta o contrato de dados para o componente neon de gráficos (Visão Geral)."""
+    _empty_tipo = lambda: {"total": 0.0, "negocios": 0, "valor_ganho": 0.0, "win_rate": 0.0, "margem_pct": 0.0, "top": []}
+    _tipos_vazios = {"Prefeitura": _empty_tipo(), "Cliente Direto": _empty_tipo()}
+
+    if df.empty:
+        return {"total_carteira": 0.0, "funil": [], "tipos": _tipos_vazios}
+
+    sv = df.groupby("status")["valor_total"].sum().reset_index()
+    sv["grupo"] = sv["status"].map(classificar_estagio)
+    sv["ordem"] = sv["status"].map({s: i for i, s in enumerate(ORDEM_STATUS)})
+    sv = sv[sv["valor_total"] > 0].sort_values("ordem", ascending=False)
+    funil = [
+        {
+            "status": r["status"],
+            "label":  LABEL_CURTO.get(r["status"], r["status"]),
+            "valor":  float(r["valor_total"]),
+            "grupo":  r["grupo"],
+        }
+        for _, r in sv.iterrows()
+    ]
+
+    tipos: dict = {}
+    for tipo in ("Prefeitura", "Cliente Direto"):
+        sub = df[df["tipo_cliente"] == tipo]
+        kpis = calcular_kpis(sub)
+        top = (
+            sub.nlargest(3, "valor_total")[["nome_cliente", "valor_total"]].to_dict("records")
+            if not sub.empty else []
+        )
+        tipos[tipo] = {
+            "total":       float(sub["valor_total"].sum()) if not sub.empty else 0.0,
+            "negocios":    len(sub),
+            "valor_ganho": kpis["valor_ganho"],
+            "win_rate":    round(kpis["win_rate_valor"] * 100, 1),
+            "margem_pct":  round(kpis["margem_pct"], 1),
+            "top":         [{"nome": r["nome_cliente"], "valor": float(r["valor_total"])} for r in top],
+        }
+
+    return {"total_carteira": float(df["valor_total"].sum()), "funil": funil, "tipos": tipos}
+
+
 def cor_margem(pct: float) -> str:
     if pct >= LIMIAR_MARGEM_SAUDAVEL:
         return "#10B981"
     if pct >= LIMIAR_MARGEM_ATENCAO:
         return "#F59E0B"
     return "#EF4444"
+
+
+LABEL_CURTO: dict[str, str] = {
+    "Orçamento gerado":                       "Orc. gerado",
+    "Orçamento aguardando aprovação Pedro":   "Aguarda Pedro",
+    "Orçamento aguardando aprovação cliente": "Aguarda cliente",
+    "Orçamento aprovado":                     "Orc. aprovado",
+    "Pedido gerado":                          "Ped. gerado",
+    "Pedido em execução":                     "Em execução",
+    "Pedido entregue":                        "Entregue",
+    "Orçamento recusado":                     "Recusado",
+}
 
 
 def calcular_kpis(df: pd.DataFrame) -> dict:
