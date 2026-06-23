@@ -768,6 +768,170 @@ def grafico_tipo_cliente(df: pd.DataFrame) -> go.Figure:
     return fig
 
 
+# ── KPI iframe — CSS e JS (strings fixas; sem f-string para evitar escape) ───
+# Trade-off documentado: faixa de KPIs vira iframe isolado (components.html).
+# Vantagem: JS de count-up não reinicia a cada rerun do Streamlit; anima delta.
+# Custo: sem tooltips nativos do st.metric; paleta CTP Dark fixada no HTML.
+
+_KPI_CSS = """<style>
+*{box-sizing:border-box;margin:0;padding:0;font-family:Inter,system-ui,sans-serif;font-variant-numeric:tabular-nums}
+body{background:transparent;padding:0 2px 6px}
+.kpi-sl{font-size:.67rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#626B7A;margin:0 0 8px}
+.kpi-row{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.kpi-card{background:#15171D;border:1px solid #2A2E38;border-radius:10px;padding:14px 18px}
+.kpi-card.flash{animation:kpiFlash .6s ease-out}
+@keyframes kpiFlash{0%{background:#1B2417}100%{background:#15171D}}
+.kpi-label{font-size:.67rem;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:#9AA3B2;margin-bottom:8px}
+.kpi-value{font-size:1.42rem;font-weight:700;color:#F2F4F8;line-height:1.1;display:flex;align-items:center;gap:5px}
+.kpi-delta{font-size:.7rem;color:#626B7A;margin-top:5px}
+.aging-dot{display:inline-block;width:7px;height:7px;border-radius:50%;flex-shrink:0;animation:pulse 1.9s ease-in-out infinite}
+.aging-dot-warn{background:#FBBF24}.aging-dot-alert{background:#F87171}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.kpi-enter{animation:fadeUp .35s ease-out both}
+.kpi-enter-1{animation-delay:.04s}.kpi-enter-2{animation-delay:.10s}
+.kpi-enter-3{animation-delay:.17s}.kpi-enter-4{animation-delay:.24s}
+@keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>"""
+
+_KPI_JS = """<script>
+(function(){
+  var data=__ANIM_DATA__;
+  var rm=window.matchMedia&&window.matchMedia("(prefers-reduced-motion:reduce)").matches;
+  function fBRL(v){
+    if(v==null||isNaN(v))return"—";
+    return"R$ "+Math.abs(v).toLocaleString("pt-BR",{minimumFractionDigits:2,maximumFractionDigits:2});
+  }
+  function fPct(v){
+    if(v==null||isNaN(v))return"—";
+    return v.toLocaleString("pt-BR",{minimumFractionDigits:1,maximumFractionDigits:1})+"%";
+  }
+  function fInt(v){return Math.round(v).toString();}
+  function ease(p){return 1-Math.pow(1-p,3);}
+  data.forEach(function(d){
+    var el=document.getElementById(d.id);
+    if(!el)return;
+    var fmt=d.fmt==="brl"?fBRL:d.fmt==="pct"?fPct:fInt;
+    if(rm||Math.abs(d.to-(d.from||0))<0.005){el.textContent=fmt(d.to);return;}
+    var from=d.from||0,to=d.to,dur=900,t0=performance.now();
+    (function step(t){
+      var p=Math.min((t-t0)/dur,1);
+      el.textContent=fmt(from+(to-from)*ease(p));
+      if(p<1)requestAnimationFrame(step);else el.textContent=fmt(to);
+    })(t0);
+  });
+})();
+</script>"""
+
+
+def _build_kpi_html(prev: dict, curr: dict, first_load: bool, is_admin: bool) -> str:
+    import json as _json
+
+    n_ag      = int(curr.get("n_aging", 0) or 0)
+    aging_lim = int(curr.get("aging_lim", AGING_ALERTA_DIAS))
+    n_ganho   = int(curr.get("n_ganho",   0) or 0)
+    n_perdido = int(curr.get("n_perdido", 0) or 0)
+    pond_fmt  = format_brl(curr.get("pipeline_pond", 0) or 0)
+
+    def _chg(k: str) -> bool:
+        pv = prev.get(k)
+        return pv is not None and abs((pv or 0) - (curr.get(k) or 0)) > 0.01
+
+    def _fl(k: str) -> str:
+        return "flash" if _chg(k) else ""
+
+    def _en(n: int) -> str:
+        return f"kpi-enter kpi-enter-{n}" if first_load else ""
+
+    def _fr(k: str) -> float:
+        return float(prev.get(k) or 0)
+
+    def _to(k: str) -> float:
+        return float(curr.get(k) or 0)
+
+    # Aging pulse dot
+    aging_dot = ""
+    if n_ag > 0:
+        dc = "aging-dot-alert" if n_ag > 3 else "aging-dot-warn"
+        aging_dot = f'<span class="aging-dot {dc}"></span>'
+
+    # Aging delta text
+    aging_delta = (
+        f"{n_ag} parado{'s' if n_ag != 1 else ''} &gt; {aging_lim}d"
+        if n_ag > 0 else f"Todos ativos &le; {aging_lim}d"
+    )
+
+    # Margem % color
+    mpct = curr.get("margem_pct", 0) or 0
+    mc = "#34D399" if mpct >= LIMIAR_MARGEM_SAUDAVEL else ("#FBBF24" if mpct >= LIMIAR_MARGEM_ATENCAO else "#F87171")
+
+    # Animation data list for JS
+    anim = [
+        {"id": "kv-pipeline",  "from": _fr("pipeline"),     "to": _to("pipeline"),     "fmt": "brl"},
+        {"id": "kv-ganho",     "from": _fr("valor_ganho"),  "to": _to("valor_ganho"),  "fmt": "brl"},
+        {"id": "kv-perdido",   "from": _fr("valor_perdido"),"to": _to("valor_perdido"),"fmt": "brl"},
+        {"id": "kv-aging",     "from": _fr("n_aging"),      "to": _to("n_aging"),      "fmt": "int"},
+    ]
+    if is_admin:
+        anim += [
+            {"id": "kv-margem-b", "from": _fr("margem_bruta"), "to": _to("margem_bruta"), "fmt": "brl"},
+            {"id": "kv-margem-p", "from": _fr("margem_pct"),   "to": _to("margem_pct"),   "fmt": "pct"},
+            {"id": "kv-winrate",  "from": _fr("win_rate"),     "to": _to("win_rate"),     "fmt": "pct"},
+            {"id": "kv-ticket",   "from": _fr("ticket_medio"), "to": _to("ticket_medio"), "fmt": "brl"},
+        ]
+
+    def _card(c_id, label, delta, extra_cls, val_prefix=""):
+        return (
+            f'<div class="kpi-card {extra_cls}">'
+            f'<div class="kpi-label">{label}</div>'
+            f'<div class="kpi-value">{val_prefix}<span id="{c_id}"></span></div>'
+            f'<div class="kpi-delta">{delta}</div>'
+            f'</div>'
+        )
+
+    row1 = (
+        _card("kv-pipeline", "Pipeline Aberto",
+              f"Ponderado: {pond_fmt}", _fl("pipeline") + " " + _en(1))
+        + _card("kv-ganho", "Valor Ganho",
+                f"{n_ganho} negócio{'s' if n_ganho != 1 else ''}",
+                _fl("valor_ganho") + " " + _en(2))
+        + _card("kv-perdido", "Valor Perdido",
+                f"{n_perdido} recusado{'s' if n_perdido != 1 else ''}",
+                _fl("valor_perdido") + " " + _en(3))
+        + _card("kv-aging", "Negócios Parados", aging_delta,
+                _fl("n_aging") + " " + _en(4), val_prefix=aging_dot)
+    )
+
+    row2_block = ""
+    if is_admin:
+        row2 = (
+            _card("kv-margem-b", "Margem Bruta",
+                  "Valor ganho &minus; Custo MP", _fl("margem_bruta") + " " + _en(1))
+            + f'<div class="kpi-card {_fl("margem_pct")} {_en(2)}">'
+            + f'<div class="kpi-label">Margem %</div>'
+            + f'<div class="kpi-value"><span id="kv-margem-p" style="color:{mc}"></span></div>'
+            + f'<div class="kpi-delta">Meta &ge; {LIMIAR_MARGEM_SAUDAVEL:.0f}%</div></div>'
+            + _card("kv-winrate", "Win Rate (Valor)",
+                    "Ganho &divide; (ganho + perdido)", _fl("win_rate") + " " + _en(3))
+            + _card("kv-ticket", "Ticket Médio Ganho",
+                    f"{n_ganho} negócio{'s' if n_ganho != 1 else ''}",
+                    _fl("ticket_medio") + " " + _en(4))
+        )
+        row2_block = f'<div class="kpi-sl" style="margin-top:14px">Rentabilidade e Eficiência</div><div class="kpi-row">{row2}</div>'
+
+    js = _KPI_JS.replace("__ANIM_DATA__", _json.dumps(anim))
+
+    return (
+        f"<!DOCTYPE html><html><head><meta charset='utf-8'>{_KPI_CSS}</head>"
+        f"<body>"
+        f'<div class="kpi-sl">Comercial</div>'
+        f'<div class="kpi-row">{row1}</div>'
+        f"{row2_block}"
+        f"{js}"
+        f"</body></html>"
+    )
+
+
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 
 with st.sidebar:
@@ -841,79 +1005,52 @@ if busca.strip():
 
 # ── KPIs ──────────────────────────────────────────────────────────────────────
 
-kpis = calcular_kpis(df)
+kpis          = calcular_kpis(df)
+pipeline_pond = calcular_pipeline_ponderado(df)
+n_ag          = kpis["n_aging_alertas"]
 
 # Cabeçalho
 st.markdown(
     '<h1 style="font-size:1.5rem;font-weight:700;color:#F2F4F8;margin-bottom:2px">'
     'Painel de Operações</h1>'
-    '<div style="color:#626B7A;font-size:0.8rem;margin-bottom:20px">'
+    '<div style="color:#626B7A;font-size:0.8rem;margin-bottom:16px">'
     f'Cilla Tech Park · {len(df)} de {len(df_raw)} registros · atualizado a cada 30s'
     '</div>',
     unsafe_allow_html=True,
 )
 
-# Linha 1: Pipeline / Receita / Margem
-st.markdown('<div class="kpi-section-title" style="margin-bottom:10px">Comercial</div>', unsafe_allow_html=True)
-c1, c2, c3, c4 = st.columns(4)
+# ── Faixa de KPIs via components.html ─────────────────────────────────────────
+# Controles de animação:
+#   kpi_entered — True após 1ª carga; impede que fadeUp rode em todo rerun
+#   kpis_prev   — valores da rodada anterior; count-up anima de prev → curr
+_kpi_first = not st.session_state.get("kpi_entered", False)
+st.session_state["kpi_entered"] = True
+_kpi_prev = st.session_state.get("kpis_prev", {})
 
-pipeline_pond = calcular_pipeline_ponderado(df)
-c1.metric(
-    "Pipeline Aberto",
-    format_brl(kpis["pipeline"]),
-    f"Ponderado: {format_brl(pipeline_pond)}",
-    help="Valor total em negociação. O delta mostra o pipeline ponderado pela probabilidade "
-         "de conversão de cada estágio (ex: 'Orçamento gerado' = 20%, 'Aprovado' = 85%).",
-)
-c2.metric(
-    "Valor Ganho",
-    format_brl(kpis["valor_ganho"]),
-    f"{kpis['n_ganho']} negócios",
-    help="Soma dos orçamentos nos estágios aprovado, pedido gerado, em execução e entregue.",
-)
-c3.metric(
-    "Valor Perdido",
-    format_brl(kpis["valor_perdido"]),
-    f"{kpis['n_perdido']} recusados",
-    delta_color="inverse",
-    help="Soma dos orçamentos recusados. Nunca entra no cálculo de margem.",
-)
-# Aging: KPI de alerta — valor alto = ruim, então formatamos como texto direto
-n_ag = kpis["n_aging_alertas"]
-aging_label = f"{n_ag} parado{'s' if n_ag != 1 else ''} > {AGING_ALERTA_DIAS}d"
-c4.metric(
-    "Negócios Parados",
-    str(n_ag),
-    aging_label if n_ag > 0 else f"Todos ativos ≤ {AGING_ALERTA_DIAS}d",
-    delta_color="inverse" if n_ag > 0 else "normal",
-    help=f"Orçamentos em aberto sem mudança de status há mais de {AGING_ALERTA_DIAS} dias. "
-         "Cada dia parado aumenta o risco de perda.",
+_kpi_curr = {
+    "pipeline":       kpis["pipeline"],
+    "pipeline_pond":  pipeline_pond,
+    "valor_ganho":    kpis["valor_ganho"],
+    "n_ganho":        kpis["n_ganho"],
+    "valor_perdido":  kpis["valor_perdido"],
+    "n_perdido":      kpis["n_perdido"],
+    "n_aging":        n_ag,
+    "aging_lim":      AGING_ALERTA_DIAS,
+    "margem_bruta":   kpis["margem_bruta"],
+    "margem_pct":     kpis["margem_pct"],
+    "win_rate":       kpis["win_rate_valor"] * 100,
+    "ticket_medio":   kpis["ticket_medio"],
+}
+
+_kpi_height = 250 if _role == "admin" else 132
+components.html(
+    _build_kpi_html(_kpi_prev, _kpi_curr, _kpi_first, _role == "admin"),
+    height=_kpi_height,
+    scrolling=False,
 )
 
-# Linha 2: Rentabilidade / Eficiência (apenas admin)
-if _role == "admin":
-    st.markdown('<div class="kpi-section-title" style="margin-top:20px">Rentabilidade e Eficiência</div>', unsafe_allow_html=True)
-    c5, c6, c7, c8 = st.columns(4)
-    c5.metric(
-        "Margem Bruta",
-        format_brl(kpis["margem_bruta"]),
-        help="Valor ganho menos custo total de matéria-prima dos negócios ganhos.",
-    )
-    c6.metric(
-        "Margem %",
-        format_pct(kpis["margem_pct"]),
-        help=f"Margem bruta ÷ valor ganho. Verde ≥ {LIMIAR_MARGEM_SAUDAVEL:.0f}% | Âmbar ≥ {LIMIAR_MARGEM_ATENCAO:.0f}%.",
-    )
-    c7.metric(
-        "Win Rate (valor)",
-        format_pct(kpis["win_rate_valor"] * 100),
-        help="Valor ganho ÷ (valor ganho + valor perdido).",
-    )
-    c8.metric(
-        "Ticket Médio Ganho",
-        format_brl(kpis["ticket_medio"]),
-        help="Valor ganho ÷ número de negócios ganhos.",
-    )
+# Atualiza prev APÓS renderizar — próximo rerun recebe o delta correto
+st.session_state["kpis_prev"] = _kpi_curr
 
 st.divider()
 
