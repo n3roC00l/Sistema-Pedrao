@@ -20,7 +20,7 @@ STATUS_VALIDOS = [
 
 TIPO_CLIENTE_VALIDOS = ["Cliente Direto", "Prefeitura"]
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # ── Dados de seed ────────────────────────────────────────────────────────────
 SEED_DATA = [
@@ -279,6 +279,22 @@ def _criar_schema_v2(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _criar_schema_v3_extras(conn: sqlite3.Connection) -> None:
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS clientes (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            nome             TEXT    NOT NULL,
+            cnpj             TEXT,
+            tipo_cliente     TEXT    NOT NULL CHECK(tipo_cliente IN ('Cliente Direto', 'Prefeitura')),
+            contato_nome     TEXT,
+            contato_email    TEXT,
+            contato_telefone TEXT,
+            criado_em        TEXT    NOT NULL DEFAULT (date('now'))
+        );
+    """)
+    conn.commit()
+
+
 # ── Migração v1 → v2 ──────────────────────────────────────────────────────────
 
 def _get_schema_version(conn: sqlite3.Connection) -> int:
@@ -358,6 +374,50 @@ def _migrar_v1_para_v2(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+# ── Migração v2 → v3 ──────────────────────────────────────────────────────────
+
+def _migrar_v2_para_v3(conn: sqlite3.Connection) -> None:
+    cursor = conn.cursor()
+
+    _criar_schema_v3_extras(conn)
+
+    # Adiciona colunas novas em orcamentos (ignorando se já existirem)
+    for ddl in [
+        "ALTER TABLE orcamentos ADD COLUMN cliente_id INTEGER REFERENCES clientes(id)",
+        "ALTER TABLE orcamentos ADD COLUMN arquivado INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE orcamentos ADD COLUMN custo_realizado_mp REAL",
+    ]:
+        try:
+            cursor.execute(ddl)
+        except sqlite3.OperationalError:
+            pass  # coluna já existe
+
+    # Popula clientes a partir dos pares únicos (nome_cliente, tipo_cliente)
+    pares = cursor.execute(
+        "SELECT DISTINCT nome_cliente, tipo_cliente FROM orcamentos"
+    ).fetchall()
+    for (nome, tipo) in pares:
+        cursor.execute(
+            "INSERT OR IGNORE INTO clientes (nome, tipo_cliente) VALUES (?, ?)",
+            (nome, tipo),
+        )
+
+    # Liga cada orçamento ao seu cliente
+    cursor.execute("""
+        UPDATE orcamentos
+        SET cliente_id = (
+            SELECT id FROM clientes
+            WHERE clientes.nome = orcamentos.nome_cliente
+              AND clientes.tipo_cliente = orcamentos.tipo_cliente
+            LIMIT 1
+        )
+        WHERE cliente_id IS NULL
+    """)
+
+    cursor.execute("INSERT OR REPLACE INTO schema_version (version) VALUES (3)")
+    conn.commit()
+
+
 # ── Seed ─────────────────────────────────────────────────────────────────────
 
 def _popular_banco(conn: sqlite3.Connection) -> int:
@@ -367,14 +427,28 @@ def _popular_banco(conn: sqlite3.Connection) -> int:
 
     inseridos = 0
     for row in SEED_DATA:
+        # Garante que o cliente existe (usa a mesma conexão para evitar conflito de lock)
+        cliente_row = cursor.execute(
+            "SELECT id FROM clientes WHERE lower(nome) = lower(?) AND tipo_cliente = ?",
+            (row["cliente"], row["tipo"]),
+        ).fetchone()
+        if cliente_row:
+            cliente_id = cliente_row[0]
+        else:
+            cursor.execute(
+                "INSERT INTO clientes (nome, tipo_cliente) VALUES (?, ?)",
+                (row["cliente"], row["tipo"]),
+            )
+            cliente_id = cursor.lastrowid
+
         custo = sum(i["valor"] for i in row["mp"])
         cursor.execute("""
             INSERT INTO orcamentos
                 (data_orcamento, tipo_cliente, nome_cliente, descritivo_produto,
-                 valor_total, custo_total_mp, status, motivo_recusa)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 valor_total, custo_total_mp, status, motivo_recusa, cliente_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (row["data"], row["tipo"], row["cliente"], row["produto"],
-              row["valor"], custo, row["status"], row["motivo"]))
+              row["valor"], custo, row["status"], row["motivo"], cliente_id))
 
         oid = cursor.lastrowid
         for item in row["mp"]:
@@ -397,6 +471,60 @@ def _popular_banco(conn: sqlite3.Connection) -> int:
 
 # ── Operações de escrita ─────────────────────────────────────────────────────
 
+def inserir_cliente(
+    nome: str,
+    tipo_cliente: str,
+    cnpj: str | None = None,
+    contato_nome: str | None = None,
+    contato_email: str | None = None,
+    contato_telefone: str | None = None,
+) -> int:
+    """Retorna id do cliente existente ou cria um novo."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    row = cursor.execute(
+        "SELECT id FROM clientes WHERE lower(nome) = lower(?) AND tipo_cliente = ?",
+        (nome.strip(), tipo_cliente),
+    ).fetchone()
+    if row:
+        conn.close()
+        return int(row["id"])
+    cursor.execute(
+        """INSERT INTO clientes (nome, tipo_cliente, cnpj, contato_nome, contato_email, contato_telefone)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (nome.strip(), tipo_cliente, cnpj, contato_nome, contato_email, contato_telefone),
+    )
+    cliente_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return cliente_id
+
+
+def atualizar_cliente(
+    cliente_id: int,
+    cnpj: str | None = None,
+    contato_nome: str | None = None,
+    contato_email: str | None = None,
+    contato_telefone: str | None = None,
+) -> None:
+    conn = get_connection()
+    campos = []
+    if cnpj is not None:
+        campos.append(("cnpj", cnpj))
+    if contato_nome is not None:
+        campos.append(("contato_nome", contato_nome))
+    if contato_email is not None:
+        campos.append(("contato_email", contato_email))
+    if contato_telefone is not None:
+        campos.append(("contato_telefone", contato_telefone))
+    if campos:
+        set_clause = ", ".join(f"{c} = ?" for c, _ in campos)
+        valores = [v for _, v in campos] + [cliente_id]
+        conn.execute(f"UPDATE clientes SET {set_clause} WHERE id = ?", valores)
+        conn.commit()
+    conn.close()
+
+
 def inserir_orcamento(
     data_orcamento: str,
     tipo_cliente: str,
@@ -408,6 +536,8 @@ def inserir_orcamento(
     mp_itens: list[dict],  # [{"item": str, "valor": float}, ...]
 ) -> int:
     """Insere um novo orçamento e retorna o id gerado."""
+    cliente_id = inserir_cliente(nome_cliente, tipo_cliente)
+
     conn = get_connection()
     cursor = conn.cursor()
 
@@ -417,10 +547,10 @@ def inserir_orcamento(
     cursor.execute("""
         INSERT INTO orcamentos
             (data_orcamento, tipo_cliente, nome_cliente, descritivo_produto,
-             valor_total, custo_total_mp, status, motivo_recusa)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             valor_total, custo_total_mp, status, motivo_recusa, cliente_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (data_orcamento, tipo_cliente, nome_cliente, descritivo_produto,
-          valor_total, custo_total_mp, status, motivo_recusa or None))
+          valor_total, custo_total_mp, status, motivo_recusa or None, cliente_id))
 
     oid = cursor.lastrowid
 
@@ -445,24 +575,168 @@ def inserir_orcamento(
 def inicializar() -> sqlite3.Connection:
     conn = get_connection()
 
-    # Verifica se existe a tabela de orçamentos (pode ser schema antigo ou novo)
     tabelas = {r[0] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'"
     ).fetchall()}
 
     if "orcamentos" not in tabelas:
-        # Banco vazio — cria schema v2 direto
+        # Banco vazio — cria schema v2 + extras v3 direto
         _criar_schema_v2(conn)
-        conn.execute("INSERT OR REPLACE INTO schema_version (version) VALUES (2)")
+        _criar_schema_v3_extras(conn)
+        cursor = conn.cursor()
+        for ddl in [
+            "ALTER TABLE orcamentos ADD COLUMN cliente_id INTEGER REFERENCES clientes(id)",
+            "ALTER TABLE orcamentos ADD COLUMN arquivado INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE orcamentos ADD COLUMN custo_realizado_mp REAL",
+        ]:
+            try:
+                cursor.execute(ddl)
+            except sqlite3.OperationalError:
+                pass
+        conn.execute("INSERT OR REPLACE INTO schema_version (version) VALUES (3)")
         conn.commit()
-    elif _get_schema_version(conn) < SCHEMA_VERSION:
-        # Schema v1 detectado — migra
-        _migrar_v1_para_v2(conn)
+    else:
+        versao = _get_schema_version(conn)
+        if versao < 2:
+            _migrar_v1_para_v2(conn)
+            versao = 2
+        if versao < 3:
+            _migrar_v2_para_v3(conn)
 
     n = _popular_banco(conn)
     if n:
         print(f"[DB] {n} registros de seed inseridos.")
     return conn
+
+
+# ── Matriz de transições válidas de status ───────────────────────────────────
+
+TRANSICOES_VALIDAS: dict[str, list[str]] = {
+    "Orçamento gerado": [
+        "Orçamento aguardando aprovação Pedro",
+        "Orçamento aguardando aprovação cliente",
+        "Orçamento recusado",
+    ],
+    "Orçamento aguardando aprovação Pedro": [
+        "Orçamento aguardando aprovação cliente",
+        "Orçamento recusado",
+    ],
+    "Orçamento aguardando aprovação cliente": [
+        "Orçamento aprovado",
+        "Orçamento recusado",
+    ],
+    "Orçamento aprovado":  ["Pedido gerado", "Orçamento recusado"],
+    "Pedido gerado":       ["Pedido em execução"],
+    "Pedido em execução":  ["Pedido entregue"],
+    "Pedido entregue":     [],
+    "Orçamento recusado":  [],
+}
+
+
+def atualizar_status(
+    orcamento_id: int,
+    novo_status: str,
+    responsavel: str,
+    motivo_recusa: str | None = None,
+) -> None:
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    row = cursor.execute(
+        "SELECT status FROM orcamentos WHERE id = ?", (orcamento_id,)
+    ).fetchone()
+    if not row:
+        conn.close()
+        raise ValueError(f"Orçamento {orcamento_id} não encontrado.")
+
+    status_atual = row["status"]
+    permitidos = TRANSICOES_VALIDAS.get(status_atual, [])
+    if novo_status not in permitidos:
+        conn.close()
+        raise ValueError(
+            f"Transição inválida: '{status_atual}' -> '{novo_status}'. "
+            f"Permitidos: {permitidos or 'nenhum (status terminal)'}."
+        )
+
+    if novo_status == "Orçamento recusado" and not (motivo_recusa or "").strip():
+        conn.close()
+        raise ValueError("Motivo da recusa é obrigatório ao recusar um orçamento.")
+
+    cursor.execute(
+        "UPDATE orcamentos SET status = ?, motivo_recusa = ? WHERE id = ?",
+        (novo_status, motivo_recusa or None, orcamento_id),
+    )
+    cursor.execute(
+        "INSERT INTO historico_status (orcamento_id, status, timestamp, responsavel) "
+        "VALUES (?, ?, datetime('now', 'localtime'), ?)",
+        (orcamento_id, novo_status, responsavel),
+    )
+    conn.commit()
+    conn.close()
+
+
+def atualizar_orcamento(
+    orcamento_id: int,
+    nome_cliente: str | None = None,
+    descritivo_produto: str | None = None,
+    valor_total: float | None = None,
+    tipo_cliente: str | None = None,
+    mp_itens: list[dict] | None = None,
+) -> None:
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    campos: list[tuple] = []
+    if nome_cliente is not None:
+        campos.append(("nome_cliente", nome_cliente.strip()))
+    if descritivo_produto is not None:
+        campos.append(("descritivo_produto", descritivo_produto.strip()))
+    if valor_total is not None:
+        campos.append(("valor_total", valor_total))
+    if tipo_cliente is not None:
+        campos.append(("tipo_cliente", tipo_cliente))
+
+    if mp_itens is not None:
+        validos = [i for i in mp_itens if i.get("item", "").strip() and i.get("valor", 0) > 0]
+        custo = sum(i["valor"] for i in validos)
+        campos.append(("custo_total_mp", custo))
+        cursor.execute("DELETE FROM itens_materia_prima WHERE orcamento_id = ?", (orcamento_id,))
+        for item in validos:
+            cursor.execute(
+                "INSERT INTO itens_materia_prima (orcamento_id, descricao_item, valor) VALUES (?, ?, ?)",
+                (orcamento_id, item["item"].strip(), item["valor"]),
+            )
+
+    if campos:
+        set_clause = ", ".join(f"{col} = ?" for col, _ in campos)
+        valores = [v for _, v in campos] + [orcamento_id]
+        cursor.execute(f"UPDATE orcamentos SET {set_clause} WHERE id = ?", valores)
+
+    conn.commit()
+    conn.close()
+
+
+def arquivar_orcamento(orcamento_id: int) -> None:
+    conn = get_connection()
+    conn.execute("UPDATE orcamentos SET arquivado = 1 WHERE id = ?", (orcamento_id,))
+    conn.commit()
+    conn.close()
+
+
+def atualizar_custo_realizado(orcamento_id: int, custo_realizado: float) -> None:
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT status FROM orcamentos WHERE id = ?", (orcamento_id,)
+    ).fetchone()
+    if not row or row["status"] != "Pedido entregue":
+        conn.close()
+        raise ValueError("Custo realizado só pode ser registrado em pedidos entregues.")
+    conn.execute(
+        "UPDATE orcamentos SET custo_realizado_mp = ? WHERE id = ?",
+        (custo_realizado, orcamento_id),
+    )
+    conn.commit()
+    conn.close()
 
 
 if __name__ == "__main__":

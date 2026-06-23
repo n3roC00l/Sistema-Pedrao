@@ -3,19 +3,37 @@ Painel de Operações — Cilla Tech Park
 Diretor: Pedro | Executar: streamlit run app.py
 """
 import sqlite3
+from pathlib import Path
 
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit_authenticator as stauth
+import yaml
+from yaml.loader import SafeLoader
 
-from database import DB_PATH, STATUS_VALIDOS, TIPO_CLIENTE_VALIDOS, inicializar, inserir_orcamento
+from database import (
+    DB_PATH,
+    STATUS_VALIDOS,
+    TIPO_CLIENTE_VALIDOS,
+    TRANSICOES_VALIDAS,
+    arquivar_orcamento,
+    atualizar_cliente,
+    atualizar_custo_realizado,
+    atualizar_orcamento,
+    atualizar_status,
+    inicializar,
+    inserir_orcamento,
+)
 from metrics import (
     AGING_ALERTA_DIAS,
     COR_ESTAGIO,
     LIMIAR_MARGEM_ATENCAO,
     LIMIAR_MARGEM_SAUDAVEL,
     ORDEM_STATUS,
+    calcular_custo_vs_realizado,
     calcular_kpis,
+    calcular_pipeline_ponderado,
     classificar_estagio,
     format_brl,
     format_pct,
@@ -30,6 +48,31 @@ st.set_page_config(
 )
 
 inicializar()
+
+# ── Autenticação ──────────────────────────────────────────────────────────────
+
+_AUTH_FILE = Path(__file__).parent / "auth_config.yaml"
+with open(_AUTH_FILE, encoding="utf-8") as _f:
+    _auth_cfg = yaml.load(_f, Loader=SafeLoader)
+
+_authenticator = stauth.Authenticate(
+    _auth_cfg["credentials"],
+    _auth_cfg["cookie"]["name"],
+    _auth_cfg["cookie"]["key"],
+    _auth_cfg["cookie"]["expiry_days"],
+)
+
+_authenticator.login(location="main")
+
+if st.session_state.get("authentication_status") is False:
+    st.error("Usuário ou senha incorretos.")
+    st.stop()
+elif st.session_state.get("authentication_status") is None:
+    st.stop()
+
+_role = _auth_cfg["credentials"]["usernames"].get(
+    st.session_state.get("username", ""), {}
+).get("role", "vendedor")
 
 # ── Sistema de design — tokens injetados via CSS ──────────────────────────────
 # Justificativa de paleta:
@@ -254,6 +297,104 @@ def dialog_novo_orcamento() -> None:
             st.rerun()
 
 
+@st.dialog("Editar Orçamento", width="large")
+def dialog_editar_orcamento(orcamento_id: int) -> None:
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM orcamentos WHERE id = ?", (orcamento_id,)).fetchone()
+    itens_db = conn.execute(
+        "SELECT descricao_item, valor FROM itens_materia_prima WHERE orcamento_id = ? ORDER BY valor DESC",
+        (orcamento_id,),
+    ).fetchall()
+    conn.close()
+
+    if not row:
+        st.error("Orçamento não encontrado.")
+        return
+
+    key = f"_edit_mp_{orcamento_id}"
+    if key not in st.session_state:
+        st.session_state[key] = [{"item": r["descricao_item"], "valor": r["valor"]} for r in itens_db] or [{"item": "", "valor": 0.0}]
+
+    from datetime import date as date_type
+    col_a, col_b = st.columns(2)
+    tipo = col_a.selectbox("Tipo de cliente", TIPO_CLIENTE_VALIDOS,
+                           index=TIPO_CLIENTE_VALIDOS.index(row["tipo_cliente"]))
+    nome = col_b.text_input("Cliente / Órgão", value=row["nome_cliente"])
+    descritivo = st.text_area("Descritivo", value=row["descritivo_produto"], height=80)
+    valor = st.number_input("Valor total (R$)", value=float(row["valor_total"]),
+                            min_value=0.01, step=1000.0, format="%.2f")
+
+    st.markdown("**Itens de Matéria-Prima**")
+    itens = st.session_state[key]
+    for i, it in enumerate(itens):
+        c1, c2, c3 = st.columns([4, 2, 1])
+        itens[i]["item"]  = c1.text_input("Insumo",    value=it["item"],  key=f"{key}_n{i}", label_visibility="collapsed")
+        itens[i]["valor"] = c2.number_input("Valor R$", value=it["valor"], key=f"{key}_v{i}", label_visibility="collapsed", min_value=0.0, step=500.0, format="%.2f")
+        if c3.button("✕", key=f"{key}_r{i}", disabled=len(itens) == 1):
+            itens.pop(i); st.rerun()
+
+    st.button("+ Adicionar insumo", on_click=lambda: st.session_state[key].append({"item": "", "valor": 0.0}))
+    st.divider()
+
+    if st.button("Salvar alterações", type="primary"):
+        erros = []
+        if not nome.strip():
+            erros.append("Informe o nome do cliente.")
+        if not descritivo.strip():
+            erros.append("Informe o descritivo.")
+        if valor <= 0:
+            erros.append("Valor deve ser maior que zero.")
+        if erros:
+            for e in erros: st.error(e)
+        else:
+            atualizar_orcamento(
+                orcamento_id,
+                nome_cliente=nome.strip(),
+                descritivo_produto=descritivo.strip(),
+                valor_total=valor,
+                tipo_cliente=tipo,
+                mp_itens=itens,
+            )
+            st.cache_data.clear()
+            del st.session_state[key]
+            st.rerun()
+
+
+@st.dialog("Alterar Status", width="small")
+def dialog_alterar_status(orcamento_id: int, status_atual: str, nome_cliente: str) -> None:
+    proximos = TRANSICOES_VALIDAS.get(status_atual, [])
+    if not proximos:
+        st.info(f"**{status_atual}** é um status terminal. Nenhuma alteração permitida.")
+        return
+
+    st.markdown(f"**{nome_cliente}**")
+    st.caption(f"Status atual: {status_atual}")
+
+    novo = st.selectbox("Próximo status", proximos)
+    motivo = None
+    custo_real = None
+
+    if novo == "Orçamento recusado":
+        motivo = st.text_area("Motivo da recusa", placeholder="Descreva o motivo…")
+    if novo == "Pedido entregue":
+        custo_real = st.number_input(
+            "Custo real de MP (R$) — opcional",
+            min_value=0.0, step=500.0, format="%.2f",
+            help="Registre o custo real de materiais para comparar com o orçado.",
+        )
+
+    if st.button("Confirmar", type="primary"):
+        try:
+            atualizar_status(orcamento_id, novo, responsavel="Pedro", motivo_recusa=motivo)
+            if novo == "Pedido entregue" and custo_real and custo_real > 0:
+                atualizar_custo_realizado(orcamento_id, custo_real)
+            st.cache_data.clear()
+            st.rerun()
+        except ValueError as e:
+            st.error(str(e))
+
+
 # ── Funções de carregamento ───────────────────────────────────────────────────
 
 @st.cache_data(ttl=30)
@@ -273,11 +414,36 @@ def carregar_dados() -> pd.DataFrame:
             FROM historico_status
             GROUP BY orcamento_id
         ) h ON h.orcamento_id = o.id
+        WHERE o.arquivado = 0
         ORDER BY o.data_orcamento DESC
     """, conn)
     conn.close()
     df["data_orcamento"] = pd.to_datetime(df["data_orcamento"])
     df["estagio"] = df["status"].map(classificar_estagio)
+    return df
+
+
+@st.cache_data(ttl=30)
+def carregar_clientes() -> pd.DataFrame:
+    conn = sqlite3.connect(DB_PATH)
+    df = pd.read_sql_query("""
+        SELECT
+            c.id, c.nome, c.cnpj, c.tipo_cliente,
+            c.contato_nome, c.contato_email, c.contato_telefone,
+            COUNT(o.id)                                         AS total_negocios,
+            COALESCE(SUM(CASE WHEN o.status IN (
+                'Orçamento aprovado','Pedido gerado',
+                'Pedido em execução','Pedido entregue'
+            ) THEN o.valor_total ELSE 0 END), 0)               AS valor_ganho,
+            COALESCE(SUM(CASE WHEN o.status = 'Orçamento recusado'
+                THEN o.valor_total ELSE 0 END), 0)             AS valor_perdido,
+            COALESCE(SUM(o.custo_total_mp), 0)                 AS custo_mp
+        FROM clientes c
+        LEFT JOIN orcamentos o ON o.cliente_id = c.id AND o.arquivado = 0
+        GROUP BY c.id
+        ORDER BY valor_ganho DESC
+    """, conn)
+    conn.close()
     return df
 
 
@@ -382,7 +548,11 @@ def grafico_tipo_cliente(df: pd.DataFrame) -> go.Figure:
 
 with st.sidebar:
     st.markdown("### Cilla Tech Park")
-    st.markdown('<div style="color:#C2892B;font-size:0.75rem;margin-top:-12px;margin-bottom:16px;letter-spacing:0.05em">PAINEL DE OPERAÇÕES</div>', unsafe_allow_html=True)
+    st.markdown('<div style="color:#C2892B;font-size:0.75rem;margin-top:-12px;margin-bottom:8px;letter-spacing:0.05em">PAINEL DE OPERAÇÕES</div>', unsafe_allow_html=True)
+    _user_display = st.session_state.get("name", st.session_state.get("username", ""))
+    _role_label = "Admin" if _role == "admin" else "Vendedor"
+    st.markdown(f'<div style="font-size:0.72rem;color:#475569;margin-bottom:12px">{_user_display} · {_role_label}</div>', unsafe_allow_html=True)
+    _authenticator.logout("Sair", location="sidebar")
 
     if st.button("＋ Novo Orçamento", width="stretch", type="primary"):
         if "_mp" in st.session_state:
@@ -463,12 +633,13 @@ st.markdown(
 st.markdown('<div class="kpi-section-title">Comercial</div>', unsafe_allow_html=True)
 c1, c2, c3, c4 = st.columns(4)
 
+pipeline_pond = calcular_pipeline_ponderado(df)
 c1.metric(
     "Pipeline Aberto",
     format_brl(kpis["pipeline"]),
-    f"{kpis['n_aberto']} negócios",
-    help="Valor total de orçamentos ainda em negociação (não decididos). "
-         "Inclui: Orçamento gerado, aguardando aprovação Pedro e aguardando aprovação cliente.",
+    f"Ponderado: {format_brl(pipeline_pond)}",
+    help="Valor total em negociação. O delta mostra o pipeline ponderado pela probabilidade "
+         "de conversão de cada estágio (ex: 'Orçamento gerado' = 20%, 'Aprovado' = 85%).",
 )
 c2.metric(
     "Valor Ganho",
@@ -495,47 +666,44 @@ c4.metric(
          "Cada dia parado aumenta o risco de perda.",
 )
 
-# Linha 2: Rentabilidade / Eficiência
-st.markdown('<div class="kpi-section-title" style="margin-top:16px">Rentabilidade e Eficiência</div>', unsafe_allow_html=True)
-c5, c6, c7, c8 = st.columns(4)
-
-c5.metric(
-    "Margem Bruta",
-    format_brl(kpis["margem_bruta"]),
-    help="Valor ganho menos custo total de matéria-prima dos negócios ganhos. "
-         "Orçamentos perdidos e em aberto não entram neste cálculo.",
-)
-c6.metric(
-    "Margem %",
-    format_pct(kpis["margem_pct"]),
-    help=f"Margem bruta ÷ valor ganho. "
-         f"Verde ≥ {LIMIAR_MARGEM_SAUDAVEL:.0f}% | Âmbar ≥ {LIMIAR_MARGEM_ATENCAO:.0f}% | Vermelho abaixo.",
-)
-c7.metric(
-    "Win Rate (valor)",
-    format_pct(kpis["win_rate_valor"] * 100),
-    help="Valor ganho ÷ (valor ganho + valor perdido). "
-         "Mede a eficiência comercial sobre os negócios já decididos.",
-)
-c8.metric(
-    "Ticket Médio Ganho",
-    format_brl(kpis["ticket_medio"]),
-    help="Valor ganho ÷ número de negócios ganhos. "
-         "Referência para priorização de oportunidades.",
-)
+# Linha 2: Rentabilidade / Eficiência (apenas admin)
+if _role == "admin":
+    st.markdown('<div class="kpi-section-title" style="margin-top:16px">Rentabilidade e Eficiência</div>', unsafe_allow_html=True)
+    c5, c6, c7, c8 = st.columns(4)
+    c5.metric(
+        "Margem Bruta",
+        format_brl(kpis["margem_bruta"]),
+        help="Valor ganho menos custo total de matéria-prima dos negócios ganhos.",
+    )
+    c6.metric(
+        "Margem %",
+        format_pct(kpis["margem_pct"]),
+        help=f"Margem bruta ÷ valor ganho. Verde ≥ {LIMIAR_MARGEM_SAUDAVEL:.0f}% | Âmbar ≥ {LIMIAR_MARGEM_ATENCAO:.0f}%.",
+    )
+    c7.metric(
+        "Win Rate (valor)",
+        format_pct(kpis["win_rate_valor"] * 100),
+        help="Valor ganho ÷ (valor ganho + valor perdido).",
+    )
+    c8.metric(
+        "Ticket Médio Ganho",
+        format_brl(kpis["ticket_medio"]),
+        help="Valor ganho ÷ número de negócios ganhos.",
+    )
 
 st.divider()
 
 
 # ── Abas ──────────────────────────────────────────────────────────────────────
 
-aba_visao, aba_todos, aba_pref, aba_cli, aba_mp, aba_perdidos = st.tabs([
+aba_visao, aba_todos, aba_pref, aba_cli, aba_mp, aba_perdidos, aba_clientes = st.tabs([
     "Visão Geral",
     "Todos os Registros",
     "Prefeituras",
     "Clientes Diretos",
     "Matéria-Prima",
     "Perdidos",
+    "Clientes",
 ])
 
 
@@ -546,8 +714,10 @@ def tabela_orcamentos(frame: pd.DataFrame, key: str, mostrar_aging: bool = True)
         st.info("Nenhum registro encontrado com os filtros aplicados.")
         return
 
-    cols = ["data_orcamento", "tipo_cliente", "nome_cliente", "descritivo_produto",
-            "valor_total", "custo_total_mp", "estagio", "status", "motivo_recusa"]
+    cols = ["data_orcamento", "tipo_cliente", "nome_cliente", "descritivo_produto", "valor_total"]
+    if _role == "admin":
+        cols.append("custo_total_mp")
+    cols += ["estagio", "status", "motivo_recusa"]
     if mostrar_aging:
         cols.insert(-1, "aging_dias")
 
@@ -579,6 +749,38 @@ def tabela_orcamentos(frame: pd.DataFrame, key: str, mostrar_aging: bool = True)
     }
 
     st.dataframe(exibir, width="stretch", hide_index=True, column_config=col_cfg, key=key)
+
+    # Ações por linha
+    st.markdown('<div style="margin-top:8px;margin-bottom:2px;font-size:0.72rem;color:#475569;font-weight:700;letter-spacing:0.06em;text-transform:uppercase">Ações</div>', unsafe_allow_html=True)
+    for _, row in frame.iterrows():
+        oid = int(row["id"])
+        terminal = not TRANSICOES_VALIDAS.get(row["status"], [])
+        ca, cb, cc, cd = st.columns([3, 1, 1, 1])
+        ca.markdown(
+            f'<span style="font-size:0.8rem;color:#94A3B8">{row["nome_cliente"]}</span>',
+            unsafe_allow_html=True,
+        )
+        if cb.button("✎ Editar", key=f"{key}_edit_{oid}", use_container_width=True):
+            dialog_editar_orcamento(oid)
+        if cc.button(
+            "→ Status", key=f"{key}_st_{oid}",
+            use_container_width=True, disabled=terminal,
+            help="Status terminal — nenhuma transição possível." if terminal else None,
+        ):
+            dialog_alterar_status(oid, row["status"], row["nome_cliente"])
+        if _role == "admin" and cd.button("🗑", key=f"{key}_arc_{oid}", use_container_width=True, help="Arquivar orçamento"):
+            st.session_state[f"_confirm_arc_{oid}"] = True
+        if st.session_state.get(f"_confirm_arc_{oid}"):
+            st.warning(f"Arquivar **{row['nome_cliente']}** — {format_brl(row['valor_total'])}? Esta ação oculta o registro.")
+            c_ok, c_no = st.columns(2)
+            if c_ok.button("Confirmar", key=f"{key}_arc_ok_{oid}", type="primary"):
+                arquivar_orcamento(oid)
+                st.cache_data.clear()
+                del st.session_state[f"_confirm_arc_{oid}"]
+                st.rerun()
+            if c_no.button("Cancelar", key=f"{key}_arc_no_{oid}"):
+                del st.session_state[f"_confirm_arc_{oid}"]
+                st.rerun()
 
 
 # ── Aba: Visão Geral ──────────────────────────────────────────────────────────
@@ -758,7 +960,17 @@ with aba_mp:
                     st.dataframe(itens_df, width="stretch", hide_index=True)
                 with cb:
                     st.metric("Valor Orçamento", format_brl(row0["valor_total"]))
-                    st.metric("Custo MP", format_brl(row0["custo_total_mp"]))
+                    st.metric("Custo MP (orçado)", format_brl(row0["custo_total_mp"]))
+                    custo_real = row0.get("custo_realizado_mp")
+                    if custo_real and not pd.isna(custo_real):
+                        delta_custo = custo_real - row0["custo_total_mp"]
+                        st.metric(
+                            "Custo MP (realizado)",
+                            format_brl(custo_real),
+                            f"{'+' if delta_custo >= 0 else ''}{format_brl(delta_custo)}",
+                            delta_color="inverse",
+                            help="Diferença entre custo real e orçado de matéria-prima.",
+                        )
                     st.metric(
                         "Margem Bruta",
                         format_brl(margem) if estagio == "ganho" else "—",
@@ -803,3 +1015,61 @@ with aba_perdidos:
                 f'</div>',
                 unsafe_allow_html=True,
             )
+
+
+# ── Aba: Clientes ─────────────────────────────────────────────────────────────
+
+with aba_clientes:
+    df_clientes = carregar_clientes()
+
+    if df_clientes.empty:
+        st.info("Nenhum cliente cadastrado.")
+    else:
+        # Tabela resumo de clientes
+        resumo = df_clientes.copy()
+        resumo["win_rate"] = resumo.apply(
+            lambda r: (r["valor_ganho"] / (r["valor_ganho"] + r["valor_perdido"]) * 100)
+            if (r["valor_ganho"] + r["valor_perdido"]) > 0 else 0,
+            axis=1,
+        )
+        resumo["margem_pct"] = resumo.apply(
+            lambda r: ((r["valor_ganho"] - r["custo_mp"]) / r["valor_ganho"] * 100)
+            if r["valor_ganho"] > 0 else 0,
+            axis=1,
+        )
+
+        exibir_res = resumo[["nome", "cnpj", "tipo_cliente", "contato_nome", "contato_email",
+                              "contato_telefone", "total_negocios", "valor_ganho", "win_rate", "margem_pct"]].copy()
+        exibir_res["valor_ganho"] = exibir_res["valor_ganho"].map(format_brl)
+        exibir_res["win_rate"]    = exibir_res["win_rate"].map(lambda v: format_pct(v))
+        exibir_res["margem_pct"]  = exibir_res["margem_pct"].map(lambda v: format_pct(v))
+        exibir_res = exibir_res.fillna("—")
+        exibir_res.rename(columns={
+            "nome": "Cliente", "cnpj": "CNPJ", "tipo_cliente": "Tipo",
+            "contato_nome": "Contato", "contato_email": "E-mail",
+            "contato_telefone": "Telefone", "total_negocios": "Negócios",
+            "valor_ganho": "Valor Ganho", "win_rate": "Win Rate", "margem_pct": "Margem %",
+        }, inplace=True)
+        st.dataframe(exibir_res, width="stretch", hide_index=True)
+
+        st.divider()
+        st.markdown('<div class="kpi-section-title">Editar dados de contato</div>', unsafe_allow_html=True)
+
+        for _, cli in df_clientes.iterrows():
+            with st.expander(f"{cli['nome']} ({cli['tipo_cliente']})", expanded=False):
+                cc1, cc2 = st.columns(2)
+                cnpj_val     = cc1.text_input("CNPJ",     value=cli["cnpj"] or "",     key=f"cli_cnpj_{cli['id']}")
+                contato_val  = cc2.text_input("Contato",  value=cli["contato_nome"] or "", key=f"cli_ctnom_{cli['id']}")
+                email_val    = cc1.text_input("E-mail",   value=cli["contato_email"] or "", key=f"cli_email_{cli['id']}")
+                tel_val      = cc2.text_input("Telefone", value=cli["contato_telefone"] or "", key=f"cli_tel_{cli['id']}")
+
+                if st.button("Salvar contato", key=f"cli_save_{cli['id']}"):
+                    atualizar_cliente(
+                        int(cli["id"]),
+                        cnpj=cnpj_val.strip() or None,
+                        contato_nome=contato_val.strip() or None,
+                        contato_email=email_val.strip() or None,
+                        contato_telefone=tel_val.strip() or None,
+                    )
+                    st.cache_data.clear()
+                    st.rerun()

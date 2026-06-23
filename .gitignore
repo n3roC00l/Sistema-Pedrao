@@ -2,4 +2,5 @@
 __pycache__/
 *.pyc
 .env
+auth_config.yaml
 .streamlit/secrets.toml

@@ -46,6 +46,18 @@ COR_ESTAGIO: dict[str, str] = {
     "desconhecido": "#94A3B8", # slate-400
 }
 
+# Probabilidade de fechamento por estágio (usada no pipeline ponderado)
+PROBABILIDADE_STATUS: dict[str, float] = {
+    "Orçamento gerado":                       0.20,
+    "Orçamento aguardando aprovação Pedro":   0.35,
+    "Orçamento aguardando aprovação cliente": 0.55,
+    "Orçamento aprovado":                     0.85,
+    "Pedido gerado":                          0.95,
+    "Pedido em execução":                     1.00,
+    "Pedido entregue":                        1.00,
+    "Orçamento recusado":                     0.00,
+}
+
 
 def classificar_estagio(status: str) -> str:
     for estagio, statuses in ESTAGIOS.items():
@@ -65,6 +77,33 @@ def format_pct(valor: float | None, casas: int = 1) -> str:
     if valor is None or (isinstance(valor, float) and pd.isna(valor)):
         return "—"
     return f"{valor:.{casas}f}%".replace(".", ",")
+
+
+def calcular_pipeline_ponderado(df: pd.DataFrame) -> float:
+    """Soma valor_total × probabilidade apenas para o estágio aberto."""
+    if df.empty:
+        return 0.0
+    aberto = df[df["status"].map(classificar_estagio) == "aberto"].copy()
+    if aberto.empty:
+        return 0.0
+    aberto["peso"] = aberto["status"].map(PROBABILIDADE_STATUS).fillna(0.0)
+    return float((aberto["valor_total"] * aberto["peso"]).sum())
+
+
+def calcular_custo_vs_realizado(df: pd.DataFrame) -> dict:
+    """Compara custo_total_mp (orçado) com custo_realizado_mp nos pedidos entregues."""
+    entregues = df[
+        (df["status"] == "Pedido entregue") & df["custo_realizado_mp"].notna()
+    ] if "custo_realizado_mp" in df.columns else pd.DataFrame()
+
+    if entregues.empty:
+        return {"orcado": 0.0, "realizado": 0.0, "delta": 0.0, "delta_pct": 0.0, "n": 0}
+
+    orcado    = float(entregues["custo_total_mp"].sum())
+    realizado = float(entregues["custo_realizado_mp"].sum())
+    delta     = realizado - orcado
+    delta_pct = (delta / orcado * 100) if orcado > 0 else 0.0
+    return {"orcado": orcado, "realizado": realizado, "delta": delta, "delta_pct": delta_pct, "n": len(entregues)}
 
 
 def cor_margem(pct: float) -> str:
