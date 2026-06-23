@@ -1199,9 +1199,14 @@ def tabela_orcamentos(frame: pd.DataFrame, key: str, mostrar_aging: bool = True)
 # ── Aba: Visão Geral ──────────────────────────────────────────────────────────
 
 with aba_visao:
-    _prev_total = st.session_state.get("charts_prev_total", 0.0)
+    _prev_total  = st.session_state.get("charts_prev_total", 0.0)
     _charts_data = montar_contrato_graficos(df)
-    st.iframe(_charts_iframe_src(_charts_data, modo_calmo, _prev_total), height=390)
+    if len(intervalo) == 2:
+        _charts_data["periodo"] = {
+            "inicio": intervalo[0].strftime("%d/%m/%Y"),
+            "fim":    intervalo[1].strftime("%d/%m/%Y"),
+        }
+    st.iframe(_charts_iframe_src(_charts_data, modo_calmo, _prev_total), height=440)
     st.session_state["charts_prev_total"] = _charts_data["total_carteira"]
 
     # Alertas de aging
