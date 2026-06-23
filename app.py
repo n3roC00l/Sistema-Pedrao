@@ -8,6 +8,7 @@ from pathlib import Path
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 import streamlit_authenticator as stauth
 import yaml
 from yaml.loader import SafeLoader
@@ -420,6 +421,7 @@ def dialog_novo_orcamento() -> None:
                 motivo_recusa    = motivo,
                 mp_itens         = itens,
             )
+            st.toast(f"Orçamento de {nome.strip()} criado com sucesso", icon="✅")
             st.cache_data.clear()
             del st.session_state["_mp"]
             st.rerun()
@@ -484,6 +486,7 @@ def dialog_editar_orcamento(orcamento_id: int) -> None:
                 tipo_cliente=tipo,
                 mp_itens=itens,
             )
+            st.toast("Orçamento atualizado com sucesso", icon="✅")
             st.cache_data.clear()
             del st.session_state[key]
             st.rerun()
@@ -517,10 +520,103 @@ def dialog_alterar_status(orcamento_id: int, status_atual: str, nome_cliente: st
             atualizar_status(orcamento_id, novo, responsavel="Pedro", motivo_recusa=motivo)
             if novo == "Pedido entregue" and custo_real and custo_real > 0:
                 atualizar_custo_realizado(orcamento_id, custo_real)
+            st.toast(f"Status atualizado para **{novo}**", icon="✅")
             st.cache_data.clear()
             st.rerun()
         except ValueError as e:
             st.error(str(e))
+
+
+@st.dialog("Detalhes do Orçamento", width="large")
+def dialog_detalhe(orcamento_id: int) -> None:
+    """Mostra resumo + timeline animada do histórico de status."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM orcamentos WHERE id = ?", (orcamento_id,)).fetchone()
+    historico = conn.execute(
+        """SELECT status_novo, responsavel, motivo_recusa, timestamp
+           FROM historico_status WHERE orcamento_id = ?
+           ORDER BY timestamp ASC""",
+        (orcamento_id,),
+    ).fetchall()
+    conn.close()
+
+    if not row:
+        st.error("Orçamento não encontrado.")
+        return
+
+    # ── Resumo ────────────────────────────────────────────────────────────────
+    c1, c2, c3 = st.columns([3, 2, 2])
+    c1.markdown(f"**{row['nome_cliente']}**  \n{row['tipo_cliente']}")
+    c2.markdown(f"**Valor:** {format_brl(row['valor_total'])}")
+    c3.markdown(f"**Status atual:** {badge_status(row['status'])}", unsafe_allow_html=True)
+    st.caption(row["descritivo_produto"])
+    st.divider()
+
+    if not historico:
+        st.info("Nenhuma transição de status registrada ainda.")
+        return
+
+    # ── Timeline animada ──────────────────────────────────────────────────────
+    # Cada item aparece com fadeUp escalonado (CSS da Fase 1).
+    # prefers-reduced-motion já está na trava global do CSS — os itens ficam
+    # visíveis imediatamente sem animação.
+    st.markdown("**Histórico de status**")
+
+    # Calcula dias em cada etapa
+    from datetime import datetime as _dt
+
+    def _parse_ts(ts: str) -> _dt:
+        for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+            try:
+                return _dt.strptime(ts, fmt)
+            except ValueError:
+                continue
+        return _dt.now()
+
+    ts_list = [_parse_ts(h["timestamp"]) for h in historico]
+
+    linhas = []
+    for i, h in enumerate(historico):
+        is_last = i == len(historico) - 1
+        estagio = classificar_estagio(h["status_novo"])
+        dot_cls = (
+            "tl-dot perdido" if estagio == "perdido"
+            else ("tl-dot atual" if is_last else "tl-dot done")
+        )
+        if i < len(historico) - 1:
+            delta_dias = (ts_list[i + 1] - ts_list[i]).days
+            duracao = f"{delta_dias}d neste estágio"
+        else:
+            delta_dias = ((_dt.now() - ts_list[i]).days)
+            duracao = f"{delta_dias}d (atual)"
+
+        resp = f" · {h['responsavel']}" if h["responsavel"] else ""
+        motivo = f"<div class='tl-meta' style='color:#F87171'>↳ {h['motivo_recusa']}</div>" if h["motivo_recusa"] else ""
+        delay = f"{0.06 + i * 0.08:.2f}s"
+        line_delay = f"{0.08 + i * 0.08:.2f}s"
+        line_html = (
+            f'<div class="tl-line" style="animation-delay:{line_delay}"></div>'
+            if not is_last else ""
+        )
+        linhas.append(
+            f'<div class="tl-item" style="animation-delay:{delay}">'
+            f'  <div class="tl-dot-wrap">'
+            f'    <div class="{dot_cls}"></div>'
+            f'    {line_html}'
+            f'  </div>'
+            f'  <div class="tl-content">'
+            f'    <div class="tl-status">{h["status_novo"]}</div>'
+            f'    <div class="tl-meta">{ts_list[i].strftime("%d/%m/%Y %H:%M")}{resp} · {duracao}</div>'
+            f'    {motivo}'
+            f'  </div>'
+            f'</div>'
+        )
+
+    st.markdown(
+        f'<div class="tl-wrap">{"".join(linhas)}</div>',
+        unsafe_allow_html=True,
+    )
 
 
 # ── Funções de carregamento ───────────────────────────────────────────────────
@@ -835,80 +931,175 @@ aba_visao, aba_todos, aba_pref, aba_cli, aba_mp, aba_perdidos, aba_clientes = st
 ])
 
 
-# ── Helpers de tabela ─────────────────────────────────────────────────────────
+# ── Helper: tabela de orçamentos ─────────────────────────────────────────────
+# Renderiza via Styler (coloração semântica de células) + on_select → barra de
+# ação contextual. A lista vertical de botões por linha foi removida.
 
 def tabela_orcamentos(frame: pd.DataFrame, key: str, mostrar_aging: bool = True) -> None:
     if frame.empty:
         st.info("Nenhum registro encontrado com os filtros aplicados.")
         return
 
-    cols = ["data_orcamento", "tipo_cliente", "nome_cliente", "descritivo_produto", "valor_total"]
+    frame = frame.reset_index(drop=True)
+    _sel_key = f"{key}_sel"
+
+    # ── Display DF ────────────────────────────────────────────────────────────
+    display_cols = ["data_orcamento", "tipo_cliente", "nome_cliente",
+                    "descritivo_produto", "valor_total"]
     if _role == "admin":
-        cols.append("custo_total_mp")
-    cols += ["estagio", "status", "motivo_recusa"]
+        display_cols += ["custo_total_mp"]
+    display_cols += ["status"]
     if mostrar_aging:
-        cols.insert(-1, "aging_dias")
+        display_cols += ["aging_dias"]
+    display_cols += ["motivo_recusa"]
 
-    exibir = frame[cols].copy()
+    exibir = frame[display_cols].copy()
+
+    if _role == "admin":
+        exibir["margem_pct"] = (
+            (frame["valor_total"] - frame["custo_total_mp"])
+            / frame["valor_total"].replace(0, float("nan")) * 100
+        ).round(1)
+
     exibir["data_orcamento"] = exibir["data_orcamento"].dt.strftime("%d/%m/%Y")
-    exibir["valor_total"]    = exibir["valor_total"].map(format_brl)
-    exibir["custo_total_mp"] = exibir["custo_total_mp"].map(format_brl)
-    exibir["estagio"]        = exibir["estagio"].str.capitalize()
 
-    rename = {
-        "data_orcamento":    "Data",
-        "tipo_cliente":      "Tipo",
-        "nome_cliente":      "Cliente / Órgão",
+    exibir.rename(columns={
+        "data_orcamento":     "Data",
+        "tipo_cliente":       "Tipo",
+        "nome_cliente":       "Cliente",
         "descritivo_produto": "Descritivo",
-        "valor_total":       "Valor",
-        "custo_total_mp":    "Custo MP",
-        "estagio":           "Estágio",
-        "aging_dias":        "Aging (dias)",
-        "status":            "Status",
-        "motivo_recusa":     "Motivo Recusa",
-    }
-    exibir.rename(columns=rename, inplace=True)
+        "valor_total":        "Valor",
+        "custo_total_mp":     "Custo MP",
+        "margem_pct":         "Margem %",
+        "aging_dias":         "Aging",
+        "status":             "Status",
+        "motivo_recusa":      "Motivo",
+    }, inplace=True)
 
+    # ── Styler — coloração semântica de células ───────────────────────────────
+    def _style_status(val: str) -> str:
+        if pd.isna(val):
+            return ""
+        estagio = classificar_estagio(str(val))
+        if val == "Orçamento aguardando aprovação Pedro":
+            return "background-color:#3A2A08;color:#FBBF24;font-weight:600"
+        if estagio == "ganho":
+            return "background-color:#08352A;color:#34D399;font-weight:600"
+        if estagio == "perdido":
+            return "background-color:#3A1414;color:#F87171;font-weight:600"
+        return "background-color:#0C2E42;color:#7DD3FC;font-weight:600"
+
+    def _style_aging(val) -> str:
+        if pd.isna(val):
+            return ""
+        v = float(val)
+        if v > 60:
+            return "color:#F87171;font-weight:700"
+        if v > AGING_ALERTA_DIAS:
+            return "color:#FBBF24;font-weight:600"
+        return ""
+
+    def _style_margem(val) -> str:
+        if pd.isna(val):
+            return ""
+        v = float(val)
+        if v >= LIMIAR_MARGEM_SAUDAVEL:
+            return "color:#34D399;font-weight:600"
+        if v >= LIMIAR_MARGEM_ATENCAO:
+            return "color:#FBBF24;font-weight:600"
+        return "color:#F87171;font-weight:600"
+
+    styler = exibir.style.map(_style_status, subset=["Status"])
+    if "Aging" in exibir.columns:
+        styler = styler.map(_style_aging, subset=["Aging"])
+    if "Margem %" in exibir.columns:
+        styler = styler.map(_style_margem, subset=["Margem %"])
+
+    # Formata valores monetários e percentuais via Styler.format (não pré-converte)
+    fmt: dict = {
+        "Valor": lambda v: format_brl(float(v)) if pd.notna(v) else "—",
+    }
+    if "Custo MP" in exibir.columns:
+        fmt["Custo MP"] = lambda v: format_brl(float(v)) if pd.notna(v) else "—"
+    if "Margem %" in exibir.columns:
+        fmt["Margem %"] = lambda v: format_pct(float(v)) if pd.notna(v) else "—"
+    styler = styler.format(fmt).hide(axis=0)
+
+    # ── Column config ─────────────────────────────────────────────────────────
     col_cfg: dict = {
-        "Descritivo": st.column_config.TextColumn(width="large"),
-        "Aging (dias)": st.column_config.NumberColumn(
-            help=f"Dias desde a última mudança de status. Alerta acima de {AGING_ALERTA_DIAS}d.",
-        ),
+        "Descritivo": st.column_config.TextColumn(width="medium"),
+        "Motivo":     st.column_config.TextColumn(width="small"),
     }
+    if "Aging" in exibir.columns:
+        col_cfg["Aging"] = st.column_config.NumberColumn(
+            help=f"Dias sem mudança de status. Alerta > {AGING_ALERTA_DIAS}d.",
+            format="%d",
+        )
+    if "Margem %" in exibir.columns:
+        col_cfg["Margem %"] = st.column_config.TextColumn(
+            help=f"Verde ≥ {LIMIAR_MARGEM_SAUDAVEL:.0f}% | Âmbar ≥ {LIMIAR_MARGEM_ATENCAO:.0f}%.",
+        )
 
-    st.dataframe(exibir, width="stretch", hide_index=True, column_config=col_cfg, key=key)
+    # ── Render com seleção ────────────────────────────────────────────────────
+    event = st.dataframe(
+        styler,
+        key=f"{key}_tbl",
+        on_select="rerun",
+        selection_mode="single-row",
+        use_container_width=True,
+        column_config=col_cfg,
+    )
 
-    # Ações por linha
-    st.markdown('<div style="margin-top:8px;margin-bottom:2px;font-size:0.72rem;color:#475569;font-weight:700;letter-spacing:0.06em;text-transform:uppercase">Ações</div>', unsafe_allow_html=True)
-    for _, row in frame.iterrows():
+    sel_rows = (event.selection.rows if event and hasattr(event, "selection") else [])
+    if sel_rows:
+        st.session_state[_sel_key] = sel_rows[0]
+    sel_idx = st.session_state.get(_sel_key)
+
+    # ── Barra de ação contextual ──────────────────────────────────────────────
+    if sel_idx is not None and 0 <= sel_idx < len(frame):
+        row = frame.iloc[sel_idx]
         oid = int(row["id"])
         terminal = not TRANSICOES_VALIDAS.get(row["status"], [])
-        ca, cb, cc, cd = st.columns([3, 1, 1, 1])
-        ca.markdown(
-            f'<span style="font-size:0.8rem;color:#94A3B8">{row["nome_cliente"]}</span>',
+        descr_prev = (row["descritivo_produto"][:70] + "…") if len(row["descritivo_produto"]) > 70 else row["descritivo_produto"]
+
+        st.markdown(
+            f'<div class="action-bar">'
+            f'<div class="action-bar-label">{row["nome_cliente"]}</div>'
+            f'<div class="action-bar-sub">{descr_prev}</div>'
+            f'</div>',
             unsafe_allow_html=True,
         )
-        if cb.button("✎ Editar", key=f"{key}_edit_{oid}", use_container_width=True):
+
+        extra_btn = 1 if _role == "admin" else 0
+        btn_cols = st.columns([1, 1, 1] + [1] * extra_btn + [3])
+        if btn_cols[0].button("✎ Editar", key=f"{key}_act_ed_{oid}", use_container_width=True):
             dialog_editar_orcamento(oid)
-        if cc.button(
-            "→ Status", key=f"{key}_st_{oid}",
+        if btn_cols[1].button(
+            "→ Status", key=f"{key}_act_st_{oid}",
             use_container_width=True, disabled=terminal,
             help="Status terminal — nenhuma transição possível." if terminal else None,
         ):
             dialog_alterar_status(oid, row["status"], row["nome_cliente"])
-        if _role == "admin" and cd.button("🗑", key=f"{key}_arc_{oid}", use_container_width=True, help="Arquivar orçamento"):
+        if btn_cols[2].button("🔍 Detalhes", key=f"{key}_act_det_{oid}", use_container_width=True):
+            dialog_detalhe(oid)
+        if _role == "admin" and btn_cols[3].button("🗑 Arquivar", key=f"{key}_act_arc_{oid}", use_container_width=True):
             st.session_state[f"_confirm_arc_{oid}"] = True
+
         if st.session_state.get(f"_confirm_arc_{oid}"):
             st.warning(f"Arquivar **{row['nome_cliente']}** — {format_brl(row['valor_total'])}? Esta ação oculta o registro.")
             c_ok, c_no = st.columns(2)
             if c_ok.button("Confirmar", key=f"{key}_arc_ok_{oid}", type="primary"):
                 arquivar_orcamento(oid)
+                st.toast(f"{row['nome_cliente']} arquivado", icon="🗑️")
                 st.cache_data.clear()
                 del st.session_state[f"_confirm_arc_{oid}"]
+                st.session_state.pop(_sel_key, None)
                 st.rerun()
             if c_no.button("Cancelar", key=f"{key}_arc_no_{oid}"):
                 del st.session_state[f"_confirm_arc_{oid}"]
                 st.rerun()
+    else:
+        st.caption("↑ Selecione uma linha para ver as ações disponíveis.")
 
 
 # ── Aba: Visão Geral ──────────────────────────────────────────────────────────
