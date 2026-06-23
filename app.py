@@ -49,6 +49,13 @@ st.set_page_config(
 
 inicializar()
 
+# ── Logo (versão dark) ────────────────────────────────────────────────────────
+# IMPORTANTE: assets/logo_dark.svg é um placeholder geométrico.
+# Substituir pelo SVG oficial da Cilla Tech Park (hexágonos limão + wordmark branco).
+_LOGO_PATH = Path(__file__).parent / "assets" / "logo_dark.svg"
+if _LOGO_PATH.exists():
+    st.logo(str(_LOGO_PATH))
+
 # ── Autenticação ──────────────────────────────────────────────────────────────
 
 _AUTH_FILE = Path(__file__).parent / "auth_config.yaml"
@@ -74,36 +81,50 @@ _role = _auth_cfg["credentials"]["usernames"].get(
     st.session_state.get("username", ""), {}
 ).get("role", "vendedor")
 
-# ── Sistema de design — tokens injetados via CSS ──────────────────────────────
-# Justificativa de paleta:
-#   Base Slate (#0F172A): aço/metal — temperatura fria, industrial, não é preto de IA
-#   Acento Copper (#C2892B): cobre/bronze — metal trabalhado, alumínio anodizado,
-#     identidade distinta de vermelho/azul/verde SaaS genérico
-#   Semântica: verde=ganho, âmbar=alerta, vermelho=perda — reservados para dados
+# ── Sistema de design — CTP Dark (quase-preto + verde-limão da marca) ─────────
+# Tokens centralizados aqui e no config.toml. Nenhum hex solto fora deste bloco
+# ou das constantes abaixo.
+#
+# REGRA INEGOCIÁVEL: limão #9ACA3C aparece SOMENTE na moldura da marca
+# (logo, aba ativa, botão primário, anel de foco). Nunca em dado.
+# Verde de dado (#34D399 esmeralda) e verde de marca (limão) são cores distintas
+# por propósito — permitem distinguir "aba ativa" de "negócio ganho" num relance.
 st.markdown("""
 <style>
-/* ── Oculta chrome default do Streamlit ── */
-#MainMenu                                { visibility: hidden !important; }
-footer                                   { visibility: hidden !important; }
-[data-testid="stToolbar"]               { display: none !important; }
-[data-testid="stDecoration"]            { display: none !important; }
-[data-testid="stStatusWidget"]          { display: none !important; }
-.stDeployButton                         { display: none !important; }
-[data-testid="stHeader"]                { display: none !important; }
+/*
+ * CTP Dark — Design Tokens
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Base       #0A0B0F   Surface    #15171D   Elevated   #1E2129
+ * Border:    sutil #20242E   padrão #2A2E38   forte #3A3F4C
+ * Texto:     primary #F2F4F8   secondary #9AA3B2   tertiary #626B7A
+ * Marca:     Limão #9ACA3C / hover #A9D94E  (SOMENTE moldura)
+ * Semântica: ganho  #34D399 / bg #08352A
+ *            atenção #FBBF24 / bg #3A2A08
+ *            perda  #F87171 / bg #3A1414
+ *            aberto #7DD3FC / bg #0C2E42
+ */
 
-/* ── Tipografia: números tabulares em todo lugar ── */
+/* ── Chrome do Streamlit ── */
+#MainMenu, footer,
+[data-testid="stToolbar"],
+[data-testid="stDecoration"],
+[data-testid="stStatusWidget"],
+.stDeployButton,
+[data-testid="stHeader"] { display: none !important; visibility: hidden !important; }
+
+/* ── Tipografia global ── */
 * { font-variant-numeric: tabular-nums; }
 
 /* ── Sidebar ── */
 [data-testid="stSidebar"] {
-    background: #131F31;
-    border-right: 1px solid #1E3050;
+    background: #15171D;
+    border-right: 1px solid #20242E;
 }
 
-/* ── Métricas — cartões com borda copper sutil ── */
+/* ── KPI via st.metric (fallback / abas secundárias) ── */
 [data-testid="metric-container"] {
-    background: #1E293B;
-    border: 1px solid #334155;
+    background: #15171D;
+    border: 1px solid #2A2E38;
     border-radius: 10px;
     padding: 16px 20px 14px;
 }
@@ -112,53 +133,53 @@ footer                                   { visibility: hidden !important; }
     font-weight: 600;
     letter-spacing: 0.05em;
     text-transform: uppercase;
-    color: #94A3B8 !important;
+    color: #9AA3B2 !important;
 }
 [data-testid="stMetricValue"] {
     font-size: 1.65rem !important;
     font-weight: 700 !important;
-    color: #F1F5F9 !important;
+    color: #F2F4F8 !important;
 }
-[data-testid="stMetricDelta"] {
-    font-size: 0.78rem !important;
-}
+[data-testid="stMetricDelta"] { font-size: 0.78rem !important; }
 
 /* ── Tabs ── */
-[data-testid="stTabs"] [role="tablist"] {
-    border-bottom: 1px solid #334155;
-}
+[data-testid="stTabs"] [role="tablist"] { border-bottom: 1px solid #2A2E38; }
 [data-testid="stTabs"] button[role="tab"] {
     font-size: 0.82rem;
     font-weight: 600;
-    color: #64748B;
+    color: #626B7A;
     padding: 10px 16px;
     border-bottom: 2px solid transparent;
-    transition: color 0.15s;
+    transition: color 0.15s, border-bottom-color 0.2s;
 }
-[data-testid="stTabs"] button[role="tab"]:hover {
-    color: #CBD5E1;
-}
+[data-testid="stTabs"] button[role="tab"]:hover { color: #9AA3B2; }
 [data-testid="stTabs"] button[role="tab"][aria-selected="true"] {
-    color: #C2892B;
-    border-bottom: 2px solid #C2892B;
+    color: #9ACA3C;
+    border-bottom: 2px solid #9ACA3C;
     background: transparent;
 }
 
 /* ── Dataframes ── */
 [data-testid="stDataFrame"] { border-radius: 8px; overflow: hidden; }
+[data-testid="stDataFrame"] [role="gridcell"] { white-space: nowrap; }
 
 /* ── Expanders ── */
 [data-testid="stExpander"] {
-    background: #1E293B;
-    border: 1px solid #334155;
+    background: #15171D;
+    border: 1px solid #2A2E38;
     border-radius: 8px;
     margin-bottom: 6px;
 }
 
 /* ── Dividers ── */
-hr { border-color: #1E293B !important; }
+hr { border-color: #20242E !important; }
 
-/* ── Badges de status (usados via markdown) ── */
+/* ── Elevated layer — dialogs/modais ganham profundidade ── */
+[data-testid="stModal"] > div,
+div[role="dialog"],
+[data-baseweb="dialog"] { background: #1E2129 !important; }
+
+/* ── Badges de status (views de detalhe / expanders) ── */
 .badge {
     display: inline-block;
     padding: 2px 10px;
@@ -167,30 +188,137 @@ hr { border-color: #1E293B !important; }
     font-weight: 600;
     letter-spacing: 0.03em;
 }
-.badge-ganho   { background: #064E3B; color: #10B981; }
-.badge-aberto  { background: #1E3A5F; color: #60A5FA; }
-.badge-pedro   { background: #44260A; color: #F59E0B; }
-.badge-perdido { background: #450A0A; color: #EF4444; }
+.badge-ganho   { background: #08352A; color: #34D399; }
+.badge-aberto  { background: #0C2E42; color: #7DD3FC; }
+.badge-pedro   { background: #3A2A08; color: #FBBF24; }
+.badge-perdido { background: #3A1414; color: #F87171; }
 
-/* ── Aging alert row ── */
-.aging-alert { color: #EF4444; font-weight: 600; }
-.aging-warn  { color: #F59E0B; }
+/* ── Aging ── */
+.aging-alert { color: #F87171; font-weight: 600; }
+.aging-warn  { color: #FBBF24; }
 
-/* ── Seção de KPI ── */
+/* ── KPI section label ── */
 .kpi-section-title {
     font-size: 0.7rem;
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: #475569;
+    color: #626B7A;
     margin-bottom: 8px;
     margin-top: 4px;
 }
 
-/* ── acessibilidade ── */
-:focus-visible { outline: 2px solid #C2892B; outline-offset: 2px; }
+/* ── Barra de ação contextual (tabela) ── */
+.action-bar {
+    background: #1E2129;
+    border: 1px solid #2A2E38;
+    border-radius: 8px;
+    padding: 10px 16px;
+    margin-top: 6px;
+}
+.action-bar-label {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: #F2F4F8;
+}
+.action-bar-sub {
+    font-size: 0.72rem;
+    color: #626B7A;
+    margin-top: 2px;
+}
+
+/* ──────────────────── MOTION ─────────────────────────────────────────────── */
+/* Princípio: movimento carrega informação, não decora.
+   Toda animação é coberta pela trava de movimento reduzido abaixo. */
+
+/* ── KPI flash (mudança de valor no refresh) ── */
+@keyframes kpiFlash { 0% { background: #1B2417; } 100% { background: #15171D; } }
+.kpi-flash { animation: kpiFlash 0.6s ease-out; }
+
+/* ── Aging pulse dot ── */
+@keyframes pulseAging { 0%, 100% { opacity: 1; } 50% { opacity: .4; } }
+.aging-dot {
+    display: inline-block;
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    margin-right: 5px;
+    vertical-align: middle;
+    animation: pulseAging 1.9s ease-in-out infinite;
+}
+.aging-dot-warn  { background: #FBBF24; }
+.aging-dot-alert { background: #F87171; }
+
+/* ── Skeleton shimmer (refresh) ── */
+@keyframes shimmer {
+    0%   { background-position: -400px 0; }
+    100% { background-position:  400px 0; }
+}
+.skeleton {
+    background: #15171D;
+    background-image: linear-gradient(90deg, #15171D 0%, #1E2129 50%, #15171D 100%);
+    background-size: 800px 100%;
+    animation: shimmer 1.2s infinite linear;
+    border-radius: 6px;
+    height: 14px;
+    margin-bottom: 6px;
+}
+
+/* ── Entrada em cascata (só 1ª carga, controlada por session_state) ── */
+@keyframes fadeUp {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0);   }
+}
+.kpi-enter   { animation: fadeUp 0.35s ease-out both; }
+.kpi-enter-1 { animation-delay: 0.04s; }
+.kpi-enter-2 { animation-delay: 0.10s; }
+.kpi-enter-3 { animation-delay: 0.17s; }
+.kpi-enter-4 { animation-delay: 0.24s; }
+
+/* ── Sublinhado de aba deslizante ── */
+/* Transição já coberta por border-bottom-color 0.2s na regra das tabs acima.
+   Fallback: se o seletor do indicador interno mudar entre versões do Streamlit,
+   a cor de aba ativa em limão mantém a identidade sem o deslize. */
+
+/* ── Timeline de status (dialog de detalhe) ── */
+.tl-wrap { padding: 8px 0; }
+.tl-item {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    opacity: 0;
+    animation: fadeUp 0.3s ease-out both;
+}
+.tl-dot-wrap { display: flex; flex-direction: column; align-items: center; min-width: 16px; }
+.tl-dot {
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    border: 2px solid #2A2E38;
+    background: #1E2129;
+    flex-shrink: 0;
+    margin-top: 3px;
+}
+.tl-dot.done  { background: #34D399; border-color: #34D399; }
+.tl-dot.atual { background: #9ACA3C; border-color: #9ACA3C; box-shadow: 0 0 6px #9ACA3C55; }
+.tl-dot.perdido { background: #F87171; border-color: #F87171; }
+@keyframes growDown { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+.tl-line {
+    width: 2px;
+    background: #2A2E38;
+    flex-grow: 1;
+    min-height: 20px;
+    transform-origin: top;
+    animation: growDown 0.25s ease-out both;
+}
+.tl-content { padding-bottom: 16px; }
+.tl-status { font-size: 0.82rem; font-weight: 600; color: #F2F4F8; }
+.tl-meta   { font-size: 0.72rem; color: #626B7A; margin-top: 3px; }
+
+/* ── Trava de movimento reduzido — obrigatória, cobre TODO o motion acima ── */
 @media (prefers-reduced-motion: reduce) {
-    *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+    *, *::before, *::after {
+        animation: none !important;
+        transition: none !important;
+    }
 }
 </style>
 """, unsafe_allow_html=True)
@@ -250,10 +378,10 @@ def dialog_novo_orcamento() -> None:
     )
     if custo_atual > 0:
         margem_prev = valor - custo_atual if valor > 0 else 0
-        cor = "#10B981" if margem_prev >= 0 else "#EF4444"
+        cor = "#34D399" if margem_prev >= 0 else "#F87171"
         col_custo.markdown(
-            f'<div style="text-align:right;padding-top:8px;font-size:0.82rem;color:#94A3B8">'
-            f'Custo MP: <b style="color:#F1F5F9">{format_brl(custo_atual)}</b> &nbsp;·&nbsp; '
+            f'<div style="text-align:right;padding-top:8px;font-size:0.82rem;color:#9AA3B2">'
+            f'Custo MP: <b style="color:#F2F4F8">{format_brl(custo_atual)}</b> &nbsp;·&nbsp; '
             f'Margem prévia: <b style="color:{cor}">{format_brl(margem_prev)}</b>'
             f'</div>',
             unsafe_allow_html=True,
@@ -482,9 +610,9 @@ def badge_status(status: str) -> str:
 
 def plotly_base_layout(**kwargs) -> dict:
     return {
-        "paper_bgcolor": "#0F172A",
-        "plot_bgcolor": "#1E293B",
-        "font": {"color": "#F1F5F9", "family": "Inter, system-ui, sans-serif"},
+        "paper_bgcolor": "#0A0B0F",
+        "plot_bgcolor":  "#15171D",
+        "font": {"color": "#F2F4F8", "family": "Inter, system-ui, sans-serif"},
         "margin": {"l": 10, "r": 150, "t": 30, "b": 10},
         **kwargs,
     }
@@ -511,15 +639,15 @@ def grafico_pipeline(df: pd.DataFrame) -> go.Figure:
         marker_color=cores,
         text=textos,
         textposition="outside",
-        textfont={"size": 11, "color": "#CBD5E1"},
+        textfont={"size": 11, "color": "#9AA3B2"},
         hovertemplate="<b>%{y}</b><br>%{text}<extra></extra>",
         cliponaxis=False,
     ))
     fig.update_layout(
         **plotly_base_layout(height=320),
         xaxis={"showgrid": False, "showticklabels": False, "zeroline": False, "range": [0, status_vals["valor_total"].max() * 1.45]},
-        yaxis={"gridcolor": "#1E293B", "tickfont": {"size": 11}},
-        title={"text": "Valor por Estágio do Funil", "font": {"size": 13, "color": "#94A3B8"}},
+        yaxis={"gridcolor": "#15171D", "tickfont": {"size": 11}},
+        title={"text": "Valor por Estágio do Funil", "font": {"size": 13, "color": "#9AA3B2"}},
         bargap=0.4,
     )
     return fig
@@ -531,7 +659,7 @@ def grafico_tipo_cliente(df: pd.DataFrame) -> go.Figure:
         labels=por_tipo["tipo_cliente"],
         values=por_tipo["valor_total"],
         hole=0.52,
-        marker_colors=["#C2892B", "#60A5FA"],
+        marker_colors=["#7DD3FC", "#9AA3B2"],  # categórico — nunca limão nem verde de ganho
         textinfo="label+percent",
         textfont={"size": 11},
         hovertemplate="<b>%{label}</b><br>R$ %{value:,.0f}<extra></extra>",
@@ -539,7 +667,7 @@ def grafico_tipo_cliente(df: pd.DataFrame) -> go.Figure:
     fig.update_layout(
         **plotly_base_layout(height=320),
         showlegend=False,
-        title={"text": "Valor por Tipo de Cliente", "font": {"size": 13, "color": "#94A3B8"}},
+        title={"text": "Valor por Tipo de Cliente", "font": {"size": 13, "color": "#9AA3B2"}},
     )
     return fig
 
@@ -548,10 +676,10 @@ def grafico_tipo_cliente(df: pd.DataFrame) -> go.Figure:
 
 with st.sidebar:
     st.markdown("### Cilla Tech Park")
-    st.markdown('<div style="color:#C2892B;font-size:0.75rem;margin-top:-12px;margin-bottom:8px;letter-spacing:0.05em">PAINEL DE OPERAÇÕES</div>', unsafe_allow_html=True)
+    st.markdown('<div style="color:#9ACA3C;font-size:0.75rem;margin-top:-12px;margin-bottom:8px;letter-spacing:0.05em">PAINEL DE OPERAÇÕES</div>', unsafe_allow_html=True)
     _user_display = st.session_state.get("name", st.session_state.get("username", ""))
     _role_label = "Admin" if _role == "admin" else "Vendedor"
-    st.markdown(f'<div style="font-size:0.72rem;color:#475569;margin-bottom:12px">{_user_display} · {_role_label}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div style="font-size:0.72rem;color:#626B7A;margin-bottom:12px">{_user_display} · {_role_label}</div>', unsafe_allow_html=True)
     _authenticator.logout("Sair", location="sidebar")
 
     if st.button("＋ Novo Orçamento", width="stretch", type="primary"):
@@ -621,16 +749,16 @@ kpis = calcular_kpis(df)
 
 # Cabeçalho
 st.markdown(
-    '<h1 style="font-size:1.5rem;font-weight:700;color:#F1F5F9;margin-bottom:2px">'
+    '<h1 style="font-size:1.5rem;font-weight:700;color:#F2F4F8;margin-bottom:2px">'
     'Painel de Operações</h1>'
-    '<div style="color:#64748B;font-size:0.8rem;margin-bottom:20px">'
+    '<div style="color:#626B7A;font-size:0.8rem;margin-bottom:20px">'
     f'Cilla Tech Park · {len(df)} de {len(df_raw)} registros · atualizado a cada 30s'
     '</div>',
     unsafe_allow_html=True,
 )
 
 # Linha 1: Pipeline / Receita / Margem
-st.markdown('<div class="kpi-section-title">Comercial</div>', unsafe_allow_html=True)
+st.markdown('<div class="kpi-section-title" style="margin-bottom:10px">Comercial</div>', unsafe_allow_html=True)
 c1, c2, c3, c4 = st.columns(4)
 
 pipeline_pond = calcular_pipeline_ponderado(df)
@@ -668,7 +796,7 @@ c4.metric(
 
 # Linha 2: Rentabilidade / Eficiência (apenas admin)
 if _role == "admin":
-    st.markdown('<div class="kpi-section-title" style="margin-top:16px">Rentabilidade e Eficiência</div>', unsafe_allow_html=True)
+    st.markdown('<div class="kpi-section-title" style="margin-top:20px">Rentabilidade e Eficiência</div>', unsafe_allow_html=True)
     c5, c6, c7, c8 = st.columns(4)
     c5.metric(
         "Margem Bruta",
@@ -795,9 +923,9 @@ with aba_visao:
     # Legenda de cores semânticas
     st.markdown(
         '<div style="display:flex;gap:20px;margin-top:4px;margin-bottom:16px">'
-        '<span><span style="color:#60A5FA">●</span> <span style="color:#64748B;font-size:0.78rem">Em aberto</span></span>'
-        '<span><span style="color:#10B981">●</span> <span style="color:#64748B;font-size:0.78rem">Ganho</span></span>'
-        '<span><span style="color:#EF4444">●</span> <span style="color:#64748B;font-size:0.78rem">Perdido</span></span>'
+        '<span><span style="color:#7DD3FC">●</span> <span style="color:#626B7A;font-size:0.78rem">Em aberto</span></span>'
+        '<span><span style="color:#34D399">●</span> <span style="color:#626B7A;font-size:0.78rem">Ganho</span></span>'
+        '<span><span style="color:#F87171">●</span> <span style="color:#626B7A;font-size:0.78rem">Perdido</span></span>'
         '</div>',
         unsafe_allow_html=True,
     )
@@ -808,13 +936,15 @@ with aba_visao:
         st.markdown(f"**{len(df_alertas)} negócio(s) em aberto parado(s) há mais de {AGING_ALERTA_DIAS} dias:**")
         for _, row in df_alertas.sort_values("aging_dias", ascending=False).iterrows():
             dias = int(row["aging_dias"])
-            cor = "#EF4444" if dias > 60 else "#F59E0B"
+            cor = "#F87171" if dias > 60 else "#FBBF24"
+            dot_cls = "aging-dot aging-dot-alert" if dias > 60 else "aging-dot aging-dot-warn"
             st.markdown(
-                f'<div style="background:#1E293B;border-left:3px solid {cor};'
+                f'<div style="background:#15171D;border-left:3px solid {cor};'
                 f'padding:10px 14px;border-radius:4px;margin-bottom:6px">'
-                f'<span style="color:{cor};font-weight:600">{dias}d parado</span> · '
-                f'<b>{row["nome_cliente"]}</b> · {format_brl(row["valor_total"])} · '
-                f'<span style="color:#64748B">{row["status"]}</span>'
+                f'<span style="color:{cor};font-weight:600">'
+                f'<span class="{dot_cls}"></span>{dias}d parado</span> · '
+                f'<b style="color:#F2F4F8">{row["nome_cliente"]}</b> · {format_brl(row["valor_total"])} · '
+                f'<span style="color:#626B7A">{row["status"]}</span>'
                 f'</div>',
                 unsafe_allow_html=True,
             )
@@ -996,21 +1126,21 @@ with aba_perdidos:
 
         for _, row in df_rec.sort_values("data_orcamento", ascending=False).iterrows():
             st.markdown(
-                f'<div style="background:#1E293B;border-left:3px solid #EF4444;'
+                f'<div style="background:#15171D;border-left:3px solid #F87171;'
                 f'padding:12px 16px;border-radius:4px;margin-bottom:8px">'
                 f'<div style="display:flex;justify-content:space-between;align-items:flex-start">'
                 f'<div>'
-                f'<b style="color:#F1F5F9">{row["nome_cliente"]}</b> '
-                f'<span style="color:#64748B;font-size:0.8rem">({row["tipo_cliente"]})</span><br>'
-                f'<span style="color:#94A3B8;font-size:0.82rem">{row["descritivo_produto"]}</span>'
+                f'<b style="color:#F2F4F8">{row["nome_cliente"]}</b> '
+                f'<span style="color:#626B7A;font-size:0.8rem">({row["tipo_cliente"]})</span><br>'
+                f'<span style="color:#9AA3B2;font-size:0.82rem">{row["descritivo_produto"]}</span>'
                 f'</div>'
                 f'<div style="text-align:right;white-space:nowrap">'
-                f'<b style="color:#EF4444">{format_brl(row["valor_total"])}</b><br>'
-                f'<span style="color:#64748B;font-size:0.78rem">{row["data_orcamento"].strftime("%d/%m/%Y")}</span>'
+                f'<b style="color:#F87171">{format_brl(row["valor_total"])}</b><br>'
+                f'<span style="color:#626B7A;font-size:0.78rem">{row["data_orcamento"].strftime("%d/%m/%Y")}</span>'
                 f'</div>'
                 f'</div>'
-                f'<div style="margin-top:8px;color:#94A3B8;font-size:0.82rem">'
-                f'<b style="color:#64748B">Motivo:</b> {row["motivo_recusa"] or "—"}'
+                f'<div style="margin-top:8px;color:#9AA3B2;font-size:0.82rem">'
+                f'<b style="color:#626B7A">Motivo:</b> {row["motivo_recusa"] or "—"}'
                 f'</div>'
                 f'</div>',
                 unsafe_allow_html=True,
@@ -1053,7 +1183,7 @@ with aba_clientes:
         st.dataframe(exibir_res, width="stretch", hide_index=True)
 
         st.divider()
-        st.markdown('<div class="kpi-section-title">Editar dados de contato</div>', unsafe_allow_html=True)
+        st.markdown('<div class="kpi-section-title" style="margin-top:8px">Editar dados de contato</div>', unsafe_allow_html=True)
 
         for _, cli in df_clientes.iterrows():
             with st.expander(f"{cli['nome']} ({cli['tipo_cliente']})", expanded=False):

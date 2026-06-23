@@ -40,10 +40,10 @@ ORDEM_STATUS = [
 ]
 
 COR_ESTAGIO: dict[str, str] = {
-    "aberto":      "#60A5FA",  # blue-400
-    "ganho":       "#10B981",  # emerald-500
-    "perdido":     "#EF4444",  # red-500
-    "desconhecido": "#94A3B8", # slate-400
+    "aberto":       "#7DD3FC",  # sky-300   — dado semântico (nunca limão)
+    "ganho":        "#34D399",  # emerald-400
+    "perdido":      "#F87171",  # red-400
+    "desconhecido": "#626B7A",  # neutral
 }
 
 # Probabilidade de fechamento por estágio (usada no pipeline ponderado)

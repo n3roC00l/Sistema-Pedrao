@@ -1,0 +1,16 @@
+<!--
+  PLACEHOLDER — substituir pelo SVG oficial da Cilla Tech Park (versão dark).
+  Asset esperado: hexágonos em limão (#9ACA3C) + wordmark "CILLA TECH PARK" em branco (#F2F4F8).
+  A versão navy/escura do wordmark some no tema quase-preto — use sempre a versão branca aqui.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 44" width="220" height="44">
+  <!-- Hexágonos limão (placeholder geométrico, não é a árvore oficial) -->
+  <polygon points="12,8 20,4 28,8 28,18 20,22 12,18" fill="#9ACA3C"/>
+  <polygon points="30,8 38,4 46,8 46,18 38,22 30,18" fill="#9ACA3C" opacity="0.65"/>
+  <polygon points="21,20 29,16 37,20 37,30 29,34 21,30" fill="#9ACA3C" opacity="0.4"/>
+  <!-- Wordmark branco -->
+  <text x="54" y="17" font-family="Inter, system-ui, sans-serif" font-size="13" fill="#F2F4F8"
+        font-weight="300" letter-spacing="2.5">CILLA</text>
+  <text x="54" y="33" font-family="Inter, system-ui, sans-serif" font-size="10" fill="#F2F4F8"
+        font-weight="700" letter-spacing="3.5">TECH PARK</text>
+</svg>
