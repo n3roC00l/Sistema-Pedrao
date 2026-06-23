@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<style>
+/* ── Reset & base ─────────────────────────────────────────────────── */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden;background:#0A0B0F;color:#EAF2FF;
+  font-family:Inter,system-ui,sans-serif;font-size:13px;line-height:1.4;
+  font-variant-numeric:tabular-nums}
+
+/* ── Layout ───────────────────────────────────────────────────────── */
+.root{display:flex;height:100vh;padding:12px 10px 8px;gap:0}
+.pane{display:flex;flex-direction:column;min-width:0}
+.pane-bar{flex:55}
+.pane-sep{width:1px;background:rgba(120,160,200,.07);flex-shrink:0;margin:0 12px}
+.pane-donut{flex:45}
+.ctitle{
+  font-size:.67rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;
+  color:#5E7290;padding-bottom:8px;margin-bottom:10px;
+  border-bottom:1px solid rgba(120,160,200,.07);flex-shrink:0}
+
+/* Sutil grade no painel de barras */
+.pane-bar{
+  background-image:repeating-linear-gradient(
+    90deg,transparent,transparent 27px,rgba(120,160,200,.03) 27px,rgba(120,160,200,.03) 28px)}
+
+/* ── Bar chart ────────────────────────────────────────────────────── */
+.bars{display:flex;flex-direction:column;gap:8px;flex:1;justify-content:center;padding:0 4px}
+.bar-row{display:flex;align-items:center;gap:8px}
+.bar-lbl{
+  width:108px;flex-shrink:0;font-size:.69rem;color:#8FA8C4;
+  text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bar-track{flex:1;height:20px;position:relative}
+.bar-fill{
+  height:100%;border-radius:3px;position:absolute;left:0;top:0;
+  /* largura definida inline — NUNCA animada (regra de ouro) */}
+.bar-val{
+  position:absolute;top:50%;transform:translateY(-50%);
+  font-size:.68rem;color:#EAF2FF;white-space:nowrap}
+
+/* Receita neon: corpo translúcido + aresta + glow que respira */
+.bg-aberto {background:rgba(37,224,240,.18);border:1.5px solid #25E0F0}
+.bg-ganho  {background:rgba(46,230,166,.18);border:1.5px solid #2EE6A6}
+.bg-perdido{background:rgba(255,77,109,.16);border:1.5px solid #FF4D6D}
+
+/* Respiração só no glow (box-shadow); comprimento é fixo */
+.bg-aberto {animation:glowA 4.2s ease-in-out infinite}
+.bg-ganho  {animation:glowG 4.5s ease-in-out infinite}
+.bg-perdido{animation:glowP 4.0s ease-in-out infinite}
+
+@keyframes glowA{0%,100%{box-shadow:0 0 4px 1px rgba(37,224,240,.28)}50%{box-shadow:0 0 14px 4px rgba(37,224,240,.60)}}
+@keyframes glowG{0%,100%{box-shadow:0 0 4px 1px rgba(46,230,166,.28)}50%{box-shadow:0 0 14px 4px rgba(46,230,166,.60)}}
+@keyframes glowP{0%,100%{box-shadow:0 0 4px 1px rgba(255,77,109,.25)}50%{box-shadow:0 0 12px 3px rgba(255,77,109,.52)}}
+
+/* ── Donut ────────────────────────────────────────────────────────── */
+.donut-view{display:flex;flex-direction:column;align-items:center;flex:1;justify-content:center;gap:6px}
+#donut-svg{overflow:visible;cursor:default}
+
+/* Camada de glow (path duplicado, borrado) — anima opacidade, não o ângulo */
+.seg-glow{animation-timing-function:ease-in-out;animation-iteration-count:infinite;animation-name:segGlow;pointer-events:none}
+.sg0{animation-duration:4.2s;animation-delay:0s}
+.sg1{animation-duration:4.5s;animation-delay:1.1s}
+@keyframes segGlow{0%,100%{opacity:.22}50%{opacity:.62}}
+
+/* Foco visível em segmentos (acessibilidade) */
+.seg-base:focus-visible{outline:2px solid #9ACA3C;outline-offset:4px;border-radius:2px}
+#center-g:focus-visible circle{stroke:#9ACA3C;stroke-width:2}
+
+/* Labels do donut */
+.ctext-lbl{font-size:.57rem;fill:#5E7290;font-family:Inter,system-ui,sans-serif;letter-spacing:.07em;text-transform:uppercase}
+.ctext-val{font-size:.92rem;font-weight:700;fill:#EAF2FF;font-family:Inter,system-ui,sans-serif}
+.ctext-hint{font-size:.55rem;fill:#5E7290;font-family:Inter,system-ui,sans-serif}
+
+/* Legenda */
+.donut-legend{display:flex;gap:12px;justify-content:center}
+.leg-item{display:flex;align-items:center;gap:5px;font-size:.69rem;color:#8FA8C4;cursor:pointer;
+  background:none;border:none;font-family:inherit;padding:2px 4px;border-radius:3px}
+.leg-item:hover{color:#EAF2FF}
+.leg-item:focus-visible{outline:2px solid #9ACA3C;outline-offset:2px;border-radius:3px}
+.leg-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+
+/* ── Painel de detalhe (drill-down) ──────────────────────────────── */
+.detail-view{display:none;flex-direction:column;gap:8px;flex:1;justify-content:center;padding:0 4px}
+.dv-hd{display:flex;align-items:center;gap:8px;margin-bottom:2px}
+.dv-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+.dv-name{font-size:.78rem;font-weight:700;color:#EAF2FF;flex:1}
+.dv-back{
+  background:none;border:1px solid #2A2E38;color:#8FA8C4;
+  font-size:.63rem;padding:2px 8px;border-radius:4px;cursor:pointer;
+  font-family:inherit;transition:border-color .15s,color .15s}
+.dv-back:hover{color:#EAF2FF;border-color:#5E7290}
+.dv-back:focus-visible{outline:2px solid #9ACA3C;outline-offset:2px;border-radius:4px}
+.dkpis{display:grid;grid-template-columns:1fr 1fr;gap:5px}
+.dkpi{background:#15171D;border:1px solid #20242E;border-radius:6px;padding:6px 9px}
+.dkpi.full{grid-column:1/-1}
+.dkl{font-size:.59rem;color:#5E7290;text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px}
+.dkv{font-size:.8rem;font-weight:700;color:#EAF2FF}
+.top-tit{font-size:.59rem;color:#5E7290;text-transform:uppercase;letter-spacing:.06em;margin:2px 0 5px}
+.top-row{display:flex;align-items:center;gap:6px;margin-bottom:4px}
+.top-nm{font-size:.66rem;color:#8FA8C4;width:82px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex-shrink:0}
+.top-trk{flex:1;height:5px;background:rgba(255,255,255,.06);border-radius:3px;overflow:hidden}
+.top-bar{height:100%;border-radius:3px}
+.top-vl{font-size:.63rem;color:#EAF2FF;white-space:nowrap;padding-left:4px}
+
+/* ── Movimento reduzido — cobre tudo ─────────────────────────────── */
+@media(prefers-reduced-motion:reduce){
+  .bg-aberto,.bg-ganho,.bg-perdido,.seg-glow{animation:none!important}
+  .seg-glow{opacity:.25!important}}
+</style>
+</head>
+<body>
+<div class="root">
+
+  <!-- ── Barras horizontais ──────────────────────────────────────── -->
+  <div class="pane pane-bar">
+    <div class="ctitle">Valor por Estágio do Funil</div>
+    <div class="bars" id="bars"></div>
+  </div>
+
+  <div class="pane-sep"></div>
+
+  <!-- ── Donut + detalhe ────────────────────────────────────────── -->
+  <div class="pane pane-donut">
+    <div class="ctitle">Valor por Tipo de Cliente</div>
+
+    <div class="donut-view" id="donut-view">
+      <svg id="donut-svg" width="190" height="190"
+           viewBox="-100 -100 200 200"
+           role="group" aria-label="Rosca: distribuição do valor por tipo de cliente"></svg>
+      <div class="donut-legend" id="dlegend"></div>
+    </div>
+
+    <div class="detail-view" id="detail-view"></div>
+  </div>
+</div>
+
+<script>
+var D     = __DATA__;
+var CALMO = __MODO_CALMO__;
+var PREV  = __PREV_TOTAL__;
+var RM    = window.matchMedia && window.matchMedia("(prefers-reduced-motion:reduce)").matches;
+
+/* ── Formatadores ─────────────────────────────────────────────── */
+function fBRL(v){
+  if(v==null||isNaN(+v))return"—";
+  return"R "+Number(v).toFixed(2).replace(".",",").replace(/\B(?=(\d{3})+(?!\d))/g,".");
+}
+function fPct(v){return Number(v).toFixed(1).replace(".",",")+"%";}
+function margemCor(p){return p>=40?"#2EE6A6":p>=25?"#FBBF24":"#FF4D6D";}
+
+/* ── Paleta neon ──────────────────────────────────────────────── */
+var COR_GRUPO={"aberto":"#25E0F0","ganho":"#2EE6A6","perdido":"#FF4D6D"};
+var COR_TIPO ={"Prefeitura":"#A78BFA","Cliente Direto":"#25E0F0"};
+
+/* ── Modo calmo: desliga animações via folha de estilo extra ──── */
+if(CALMO||RM){
+  var s=document.createElement("style");
+  s.textContent=".bg-aberto,.bg-ganho,.bg-perdido,.seg-glow{animation:none!important}.seg-glow{opacity:.25!important}";
+  document.head.appendChild(s);
+}
+
+/* ════════════════════════════════════════════════════════════════
+   BARRAS HORIZONTAIS
+   ════════════════════════════════════════════════════════════════ */
+var barsEl=document.getElementById("bars");
+var funil=D.funil;
+if(!funil||!funil.length){
+  barsEl.innerHTML='<div style="color:#5E7290;font-size:.75rem;padding:16px 0">Nenhum dado no período</div>';
+}else{
+  var maxV=funil.reduce(function(m,r){return Math.max(m,r.valor);},0);
+  funil.forEach(function(r,i){
+    var pct=maxV>0?(r.valor/maxV*100).toFixed(2):0;
+    var delay=(i*0.38).toFixed(2)+"s";
+    var valLeft="calc("+pct+"% + 7px)";
+    var div=document.createElement("div");
+    div.className="bar-row";
+    div.innerHTML=
+      '<div class="bar-lbl" title="'+r.status+'">'+r.label+'</div>'+
+      '<div class="bar-track" role="img" aria-label="'+r.label+': '+fBRL(r.valor)+'">'+
+        '<div class="bar-fill bg-'+r.grupo+'" style="width:'+pct+'%;animation-delay:'+delay+'"></div>'+
+        '<span class="bar-val" style="left:'+valLeft+'">'+fBRL(r.valor)+'</span>'+
+      '</div>';
+    barsEl.appendChild(div);
+  });
+}
+
+/* ════════════════════════════════════════════════════════════════
+   DONUT
+   ════════════════════════════════════════════════════════════════ */
+var svg=document.getElementById("donut-svg");
+var TIPOS=["Prefeitura","Cliente Direto"];
+var R_OUT=88,R_IN=55,GAP=0.055;
+
+/* Filtros SVG para glow por segmento */
+var defs=document.createElementNS("http://www.w3.org/2000/svg","defs");
+TIPOS.forEach(function(k,i){
+  var f=document.createElementNS("http://www.w3.org/2000/svg","filter");
+  f.id="gf"+i;f.setAttribute("x","-60%");f.setAttribute("y","-60%");
+  f.setAttribute("width","220%");f.setAttribute("height","220%");
+  var b=document.createElementNS("http://www.w3.org/2000/svg","feGaussianBlur");
+  b.setAttribute("stdDeviation","5");b.setAttribute("in","SourceGraphic");
+  f.appendChild(b);defs.appendChild(f);
+});
+svg.appendChild(defs);
+
+/* Cria path de arco de rosca */
+function donutArc(ro,ri,a0,a1){
+  function pt(r,a){return[+(Math.cos(a)*r).toFixed(4),+(Math.sin(a)*r).toFixed(4)];}
+  var p0o=pt(ro,a0),p1o=pt(ro,a1),p1i=pt(ri,a1),p0i=pt(ri,a0);
+  var la=(a1-a0)>Math.PI?1:0;
+  return["M",p0o,"A",ro,ro,0,la,1,p1o,"L",p1i,"A",ri,ri,0,la,0,p0i,"Z"].join(" ");
+}
+
+/* Calcula ângulos */
+var totalCart=D.total_carteira||0;
+var segs=TIPOS.map(function(k){return{key:k,val:D.tipos[k]?D.tipos[k].total:0};});
+var totalSeg=segs.reduce(function(s,d){return s+d.val;},0);
+var ang=-Math.PI/2;
+segs.forEach(function(s,i){
+  var por=totalSeg>0?s.val/totalSeg:1/segs.length;
+  var span=por*(2*Math.PI-GAP*segs.length);
+  s.a0=ang+GAP/2; s.a1=ang+span+GAP/2; s.idx=i;
+  ang+=span+GAP;
+});
+
+/* Cria segmentos */
+var segEls=[];
+segs.forEach(function(s,i){
+  var col=COR_TIPO[s.key];
+  var d=donutArc(R_OUT,R_IN,s.a0,s.a1);
+
+  /* Camada glow (borrada, anima opacidade) */
+  var glow=document.createElementNS("http://www.w3.org/2000/svg","path");
+  glow.setAttribute("d",d);
+  glow.setAttribute("fill",col);
+  glow.setAttribute("filter","url(#gf"+i+")");
+  if(!CALMO&&!RM){glow.className="seg-glow sg"+i;}else{glow.style.opacity="0.22";}
+  svg.appendChild(glow);
+
+  /* Segmento base (interativo) */
+  var path=document.createElementNS("http://www.w3.org/2000/svg","path");
+  path.setAttribute("d",d);
+  path.setAttribute("fill",col+"2E"); /* ~18% alpha */
+  path.setAttribute("stroke",col);
+  path.setAttribute("stroke-width","1.8");
+  path.setAttribute("role","button");
+  path.setAttribute("tabindex","0");
+  path.setAttribute("aria-label",s.key+": "+fBRL(s.val)+". Enter para detalhar.");
+  path.setAttribute("aria-selected","false");
+  path.classList.add("seg-base");
+  path.style.cursor="pointer";
+  path.style.transition="opacity .2s";
+  path.addEventListener("click",function(){selectTipo(s.key);});
+  path.addEventListener("keydown",function(e){
+    if(e.key==="Enter"||e.key===" "){e.preventDefault();selectTipo(s.key);}
+  });
+  svg.appendChild(path);
+  segEls.push({base:path,glow:glow,data:s});
+});
+
+/* Grupo central (reset) */
+var cg=document.createElementNS("http://www.w3.org/2000/svg","g");
+cg.id="center-g";
+cg.setAttribute("role","button");
+cg.setAttribute("tabindex","0");
+cg.setAttribute("aria-label","Total: "+fBRL(totalCart)+". Enter para redefinir seleção.");
+
+var cCirc=document.createElementNS("http://www.w3.org/2000/svg","circle");
+cCirc.setAttribute("r","53");cCirc.setAttribute("fill","transparent");
+cg.appendChild(cCirc);
+
+var tLbl=document.createElementNS("http://www.w3.org/2000/svg","text");
+tLbl.setAttribute("y","-13");tLbl.setAttribute("text-anchor","middle");
+tLbl.classList.add("ctext-lbl");tLbl.textContent="TOTAL";
+cg.appendChild(tLbl);
+
+var tVal=document.createElementNS("http://www.w3.org/2000/svg","text");
+tVal.setAttribute("y","7");tVal.setAttribute("text-anchor","middle");
+tVal.classList.add("ctext-val");tVal.id="ctotal";tVal.textContent=fBRL(0);
+cg.appendChild(tVal);
+
+var tHint=document.createElementNS("http://www.w3.org/2000/svg","text");
+tHint.setAttribute("y","22");tHint.setAttribute("text-anchor","middle");
+tHint.classList.add("ctext-hint");tHint.id="chint";tHint.textContent="← voltar";
+tHint.style.display="none";
+cg.appendChild(tHint);
+
+cg.addEventListener("click",resetView);
+cg.addEventListener("keydown",function(e){if(e.key==="Enter"||e.key===" "){e.preventDefault();resetView();}});
+cg.style.cursor="default";
+svg.appendChild(cg);
+
+/* Count-up do total central */
+(function countUp(from,to){
+  if(RM||CALMO||Math.abs(to-from)<0.01){
+    document.getElementById("ctotal").textContent=fBRL(to);return;
+  }
+  var dur=900,t0=performance.now();
+  (function step(t){
+    var p=Math.min(1,(t-t0)/dur);
+    var e=1-Math.pow(1-p,3);
+    document.getElementById("ctotal").textContent=fBRL(from+(to-from)*e);
+    if(p<1)requestAnimationFrame(step);
+  })(t0);
+})(PREV||0,totalCart);
+
+/* Legenda */
+var legEl=document.getElementById("dlegend");
+TIPOS.forEach(function(k){
+  var btn=document.createElement("button");
+  btn.className="leg-item";
+  btn.setAttribute("aria-label","Detalhar "+k);
+  btn.innerHTML='<div class="leg-dot" style="background:'+COR_TIPO[k]+'"></div><span>'+k+'</span>';
+  btn.addEventListener("click",function(){selectTipo(k);});
+  legEl.appendChild(btn);
+});
+
+/* ════════════════════════════════════════════════════════════════
+   DRILL-DOWN
+   ════════════════════════════════════════════════════════════════ */
+function selectTipo(tipo){
+  var data=D.tipos[tipo];
+  if(!data)return;
+  var col=COR_TIPO[tipo];
+
+  /* Realça segmento clicado, recua o outro */
+  segEls.forEach(function(s){
+    var on=s.data.key===tipo;
+    s.base.style.opacity=on?"1":"0.20";
+    s.glow.style.opacity=on?"":"0.04";
+    s.base.setAttribute("aria-selected",on?"true":"false");
+  });
+  document.getElementById("chint").style.display="block";
+  cg.style.cursor="pointer";
+
+  /* Mini-barras do top 3 */
+  var topMax=data.top&&data.top.length?data.top[0].valor:1;
+  var topHtml=(data.top||[]).map(function(t){
+    var bp=topMax>0?(t.valor/topMax*100).toFixed(1):0;
+    return'<div class="top-row">'+
+      '<div class="top-nm" title="'+t.nome+'">'+t.nome+'</div>'+
+      '<div class="top-trk"><div class="top-bar" style="width:'+bp+'%;background:'+col+'55"></div></div>'+
+      '<div class="top-vl">'+fBRL(t.valor)+'</div>'+
+    '</div>';
+  }).join("");
+
+  var dv=document.getElementById("detail-view");
+  dv.innerHTML=
+    '<div class="dv-hd">'+
+      '<div class="dv-dot" style="background:'+col+'"></div>'+
+      '<span class="dv-name">'+tipo+'</span>'+
+      '<button class="dv-back" onclick="resetView()" aria-label="Voltar à visão geral">← voltar</button>'+
+    '</div>'+
+    '<div class="dkpis">'+
+      '<div class="dkpi"><div class="dkl">Carteira</div><div class="dkv">'+fBRL(data.total)+'</div></div>'+
+      '<div class="dkpi"><div class="dkl">Negócios</div><div class="dkv">'+data.negocios+'</div></div>'+
+      '<div class="dkpi"><div class="dkl">Valor ganho</div><div class="dkv">'+fBRL(data.valor_ganho)+'</div></div>'+
+      '<div class="dkpi"><div class="dkl">Win rate</div><div class="dkv">'+fPct(data.win_rate)+'</div></div>'+
+      '<div class="dkpi full"><div class="dkl">Margem bruta</div>'+
+        '<div class="dkv" style="color:'+margemCor(data.margem_pct)+'">'+fPct(data.margem_pct)+'</div>'+
+      '</div>'+
+    '</div>'+
+    (topHtml?'<div><div class="top-tit">Maiores contratos</div>'+topHtml+'</div>':'')+
+    /* Gancho Python para futura ação (ex.: navegar ao orçamento):
+       Streamlit.setComponentValue({ action: "open_tipo", tipo: tipo }); */
+    '';
+
+  dv.style.display="flex";
+  document.getElementById("donut-view").style.display="none";
+}
+
+function resetView(){
+  segEls.forEach(function(s){
+    s.base.style.opacity="1";
+    s.glow.style.opacity="";
+    s.base.setAttribute("aria-selected","false");
+  });
+  document.getElementById("chint").style.display="none";
+  cg.style.cursor="default";
+  document.getElementById("detail-view").style.display="none";
+  document.getElementById("donut-view").style.display="flex";
+}
+</script>
+</body>
+</html>
