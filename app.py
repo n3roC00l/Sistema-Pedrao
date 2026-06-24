@@ -1196,18 +1196,127 @@ def tabela_orcamentos(frame: pd.DataFrame, key: str, mostrar_aging: bool = True)
         st.caption("↑ Selecione uma linha para ver as ações disponíveis.")
 
 
+# ── Diálogo de detalhe por tipo de cliente (drill-down do donut) ──────────────
+
+_COR_TIPO = {"Prefeitura": "#A78BFA", "Cliente Direto": "#25E0F0"}
+
+
+@st.dialog("Detalhes do Segmento", width="large")
+def _detalhe_segmento(tipo: str, data: dict, periodo: dict) -> None:
+    col = _COR_TIPO.get(tipo, "#9AA3B2")
+    d   = data.get(tipo, {})
+
+    # Cabeçalho colorido
+    st.markdown(
+        f'<div style="display:flex;align-items:center;gap:10px;margin-bottom:16px">'
+        f'<div style="width:12px;height:12px;border-radius:50%;background:{col};flex-shrink:0"></div>'
+        f'<span style="font-size:1.05rem;font-weight:700;color:#F2F4F8">{tipo}</span>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    # Linha de origem
+    n = d.get("negocios", 0)
+    periodo_txt = (
+        f" no período {periodo['inicio']}–{periodo['fim']}" if periodo.get("inicio") else ""
+    )
+    st.markdown(
+        f'<div style="font-size:.75rem;color:#5E7290;line-height:1.6;'
+        f'background:rgba(42,46,56,.45);border-radius:6px;padding:10px 14px;'
+        f'margin-bottom:18px;border-left:2px solid #2A2E38">'
+        f'Origem: {n} negócio{"s" if n != 1 else ""} do tipo {tipo}{periodo_txt}, '
+        f'somando os valores de orçamento. '
+        f'<b>Win rate</b> = valor ganho ÷ (ganho + perdido). '
+        f'<b>Margem bruta</b> = valor ganho − custo de matéria-prima.'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    # Grid de KPIs
+    def _kpi(label: str, val: str, cor: str = "#F2F4F8") -> str:
+        return (
+            f'<div style="background:#1E2129;border:1px solid #20242E;border-radius:6px;padding:12px 14px">'
+            f'<div style="font-size:.62rem;color:#5E7290;text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px">{label}</div>'
+            f'<div style="font-size:.95rem;font-weight:700;color:{cor}">{val}</div>'
+            f'</div>'
+        )
+
+    margem_pct  = d.get("margem_pct", 0)
+    margem_cor  = "#34D399" if margem_pct >= LIMIAR_MARGEM_SAUDAVEL else ("#FBBF24" if margem_pct >= LIMIAR_MARGEM_ATENCAO else "#F87171")
+
+    kpis_html = "".join([
+        _kpi("Carteira",     format_brl(d.get("total", 0))),
+        _kpi("Nº negócios",  str(n)),
+        _kpi("Valor ganho",  format_brl(d.get("valor_ganho", 0))),
+        _kpi("Win rate",     format_pct(d.get("win_rate", 0))),
+        _kpi("Margem bruta", format_pct(margem_pct, casas=1), cor=margem_cor),
+        _kpi("Ticket médio", format_brl(d.get("ticket_medio", 0))),
+    ])
+    st.markdown(
+        f'<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:20px">'
+        f'{kpis_html}</div>',
+        unsafe_allow_html=True,
+    )
+
+    # Maiores contratos — layout 3 colunas (nome · trilho · valor em coluna própria)
+    top = d.get("top", [])
+    if top:
+        top_max = top[0]["valor"] if top else 1
+        rows_html = ""
+        for t in top:
+            pct = (t["valor"] / top_max * 100) if top_max > 0 else 0
+            rows_html += (
+                f'<div style="display:grid;grid-template-columns:140px 1fr 120px;gap:8px;align-items:center;margin-bottom:7px">'
+                f'<div style="font-size:.72rem;color:#8FA8C4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="{t["nome"]}">{t["nome"]}</div>'
+                f'<div style="height:6px;background:rgba(255,255,255,.06);border-radius:3px;overflow:hidden">'
+                f'<div style="height:100%;width:{pct:.1f}%;background:{col}55;border-radius:3px"></div>'
+                f'</div>'
+                f'<div style="font-size:.7rem;color:#EAF2FF;text-align:right;white-space:nowrap">{format_brl(t["valor"])}</div>'
+                f'</div>'
+            )
+        st.markdown(
+            f'<div style="margin-bottom:4px">'
+            f'<div style="font-size:.62rem;color:#5E7290;text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px">Maiores contratos</div>'
+            f'{rows_html}</div>',
+            unsafe_allow_html=True,
+        )
+
+    if st.button("← Voltar", use_container_width=False):
+        st.rerun()
+
+
 # ── Aba: Visão Geral ──────────────────────────────────────────────────────────
 
 with aba_visao:
     _prev_total  = st.session_state.get("charts_prev_total", 0.0)
     _charts_data = montar_contrato_graficos(df)
+    _periodo: dict = {}
     if len(intervalo) == 2:
-        _charts_data["periodo"] = {
+        _periodo = {
             "inicio": intervalo[0].strftime("%d/%m/%Y"),
             "fim":    intervalo[1].strftime("%d/%m/%Y"),
         }
+        _charts_data["periodo"] = _periodo
+
     st.iframe(_charts_iframe_src(_charts_data, modo_calmo, _prev_total), height=440)
     st.session_state["charts_prev_total"] = _charts_data["total_carteira"]
+
+    # Botões de detalhe — fora do iframe, abrem st.dialog no nível da página
+    _c1, _c2 = st.columns(2)
+    with _c1:
+        if st.button(
+            "● Cliente Direto — detalhar →",
+            key="btn_detalhe_cd",
+            use_container_width=True,
+        ):
+            _detalhe_segmento("Cliente Direto", _charts_data["tipos"], _periodo)
+    with _c2:
+        if st.button(
+            "● Prefeitura — detalhar →",
+            key="btn_detalhe_pref",
+            use_container_width=True,
+        ):
+            _detalhe_segmento("Prefeitura", _charts_data["tipos"], _periodo)
 
     # Alertas de aging
     df_alertas = df[(df["estagio"] == "aberto") & (df["aging_dias"] > AGING_ALERTA_DIAS)]

@@ -137,12 +137,13 @@ def montar_contrato_graficos(df: pd.DataFrame) -> dict:
             if not sub.empty else []
         )
         tipos[tipo] = {
-            "total":       float(sub["valor_total"].sum()) if not sub.empty else 0.0,
-            "negocios":    len(sub),
-            "valor_ganho": kpis["valor_ganho"],
-            "win_rate":    round(kpis["win_rate_valor"] * 100, 1),
-            "margem_pct":  round(kpis["margem_pct"], 1),
-            "top":         [{"nome": r["nome_cliente"], "valor": float(r["valor_total"])} for r in top],
+            "total":        float(sub["valor_total"].sum()) if not sub.empty else 0.0,
+            "negocios":     len(sub),
+            "valor_ganho":  kpis["valor_ganho"],
+            "win_rate":     round(kpis["win_rate_valor"] * 100, 1),
+            "margem_pct":   round(kpis["margem_pct"], 1),
+            "ticket_medio": round(kpis["ticket_medio"], 2),
+            "top":          [{"nome": r["nome_cliente"], "valor": float(r["valor_total"])} for r in top],
         }
 
     return {"total_carteira": float(df["valor_total"].sum()), "funil": funil, "tipos": tipos}

@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<style>
+/* ── Reset & base ─────────────────────────────────────── */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden;background:#0A0B0F;color:#EAF2FF;
+  font-family:Inter,system-ui,sans-serif;font-size:13px;line-height:1.4;
+  font-variant-numeric:tabular-nums}
+
+/* ── Layout ───────────────────────────────────────────── */
+.root{display:flex;height:100vh;padding:12px 10px 8px;gap:0}
+.pane{display:flex;flex-direction:column;min-width:0}
+.pane-bar{flex:55}
+.pane-sep{width:1px;background:rgba(120,160,200,.07);flex-shrink:0;margin:0 12px}
+.pane-donut{flex:45}
+.ctitle{
+  font-size:.67rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;
+  color:#5E7290;padding-bottom:8px;margin-bottom:10px;
+  border-bottom:1px solid rgba(120,160,200,.07);flex-shrink:0}
+
+/* ── Barras horizontais — grid 3 colunas (sem vazamento) ─ */
+.bars{display:flex;flex-direction:column;gap:8px;flex:1;justify-content:center;padding:0 4px}
+.bar-row{
+  display:grid;
+  grid-template-columns:108px 1fr 118px;
+  gap:8px;
+  align-items:center}
+.bar-lbl{
+  font-size:.69rem;color:#8FA8C4;
+  text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bar-track{
+  height:20px;position:relative;
+  background:rgba(255,255,255,.035);border-radius:3px;overflow:hidden}
+.bar-fill{
+  height:100%;border-radius:3px;position:absolute;left:0;top:0;
+  transition:box-shadow .2s,border-color .2s}
+.bar-val{
+  font-size:.68rem;color:#EAF2FF;
+  text-align:right;white-space:nowrap}
+
+/* Cores semânticas das barras — calmas em repouso */
+.bg-aberto {background:rgba(56,189,248,.20);border:1px solid rgba(56,189,248,.45)}
+.bg-ganho  {background:rgba(52,211,153,.20);border:1px solid rgba(52,211,153,.45)}
+.bg-perdido{background:rgba(248,113,113,.20);border:1px solid rgba(248,113,113,.45)}
+
+/* Glow SOMENTE no hover — a barra não anima */
+.bar-row:hover .bg-aberto {box-shadow:0 0 9px 2px rgba(56,189,248,.52);border-color:#38BDF8}
+.bar-row:hover .bg-ganho  {box-shadow:0 0 9px 2px rgba(52,211,153,.52);border-color:#34D399}
+.bar-row:hover .bg-perdido{box-shadow:0 0 8px 2px rgba(248,113,113,.48);border-color:#F87171}
+
+/* ── Donut ────────────────────────────────────────────── */
+.donut-view{display:flex;flex-direction:column;align-items:center;flex:1;justify-content:center;gap:6px}
+#donut-svg{overflow:visible;cursor:default}
+
+/* Camada de glow: anima opacidade — ângulo nunca muda (regra de ouro) */
+.seg-glow{animation-timing-function:ease-in-out;animation-iteration-count:infinite;
+  animation-name:segGlow;pointer-events:none}
+.sg0{animation-duration:4.2s;animation-delay:0s}
+.sg1{animation-duration:4.5s;animation-delay:1.1s}
+@keyframes segGlow{0%,100%{opacity:.14}50%{opacity:.48}}
+
+/* Foco visível */
+.seg-base:focus-visible{outline:2px solid #9ACA3C;outline-offset:4px;border-radius:2px}
+
+/* Texto central */
+.ct-lbl{font-size:.56rem;fill:#5E7290;font-family:Inter,system-ui,sans-serif;
+  letter-spacing:.07em;text-transform:uppercase}
+.ct-val{font-size:.9rem;font-weight:700;fill:#EAF2FF;font-family:Inter,system-ui,sans-serif}
+
+/* Legenda */
+.donut-legend{display:flex;gap:12px;justify-content:center}
+.leg-item{display:flex;align-items:center;gap:5px;font-size:.69rem;color:#8FA8C4;
+  cursor:pointer;background:none;border:none;font-family:inherit;
+  padding:2px 6px;border-radius:3px;transition:color .15s}
+.leg-item:hover{color:#EAF2FF}
+.leg-item:focus-visible{outline:2px solid #9ACA3C;outline-offset:2px}
+.leg-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+
+/* Indicador de clique nos segmentos */
+.seg-base{transition:opacity .15s}
+.seg-base:hover{opacity:.85}
+.seg-base:active{opacity:.6}
+
+/* ── Movimento reduzido ───────────────────────────────── */
+@media(prefers-reduced-motion:reduce){
+  .seg-glow{animation:none!important;opacity:.18!important}
+  .bar-fill,.leg-item,.seg-base{transition:none!important}}
+</style>
+</head>
+<body>
+
+<div class="root">
+  <!-- Barras horizontais -->
+  <div class="pane pane-bar">
+    <div class="ctitle">Valor por Estágio do Funil</div>
+    <div class="bars" id="bars"></div>
+  </div>
+
+  <div class="pane-sep"></div>
+
+  <!-- Donut -->
+  <div class="pane pane-donut">
+    <div class="ctitle">Valor por Tipo de Cliente</div>
+    <div class="donut-view" id="donut-view">
+      <svg id="donut-svg" width="190" height="190" viewBox="-100 -100 200 200"
+           role="group" aria-label="Rosca: distribuição do valor por tipo de cliente"></svg>
+      <div class="donut-legend" id="dlegend"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ── Protocolo Streamlit (raw postMessage) ────────────── */
+function sendMsg(type, args) {
+  window.parent.postMessage({isStreamlitMessage:true, type:type, args:args||{}}, "*");
+}
+sendMsg("streamlit:componentReady", {apiVersion:1});
+
+var RM = !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion:reduce)").matches);
+
+/* ── Formatadores ─────────────────────────────────────── */
+function fBRL(v) {
+  if (v == null || isNaN(+v)) return "—";
+  return "R$ " + Number(v).toFixed(2)
+    .replace(".", ",")
+    .replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+}
+function fPct(v) { return Number(v).toFixed(1).replace(".", ",") + "%"; }
+
+/* ── Enviar clique ao Python ──────────────────────────── */
+function notifyClick(tipo) {
+  sendMsg("streamlit:setComponentValue", {
+    value: {tipo: tipo, ts: Date.now()},
+    dataType: "json"
+  });
+}
+
+/* ── Renderização ─────────────────────────────────────── */
+var rendered = false;
+
+function render(D, CALMO, PREV) {
+  if (CALMO || RM) {
+    var s = document.createElement("style");
+    s.textContent = ".seg-glow{animation:none!important;opacity:.18!important}";
+    document.head.appendChild(s);
+  }
+
+  renderBars(D, CALMO);
+  renderDonut(D, CALMO, PREV);
+  rendered = true;
+}
+
+/* ─── BARRAS ──────────────────────────────────────────── */
+function renderBars(D, CALMO) {
+  var el = document.getElementById("bars");
+  el.innerHTML = "";
+  var funil = D.funil || [];
+  if (!funil.length) {
+    el.innerHTML = '<div style="color:#5E7290;font-size:.75rem;padding:16px 0">Nenhum dado no período</div>';
+    return;
+  }
+  var maxV = funil.reduce(function(m, r) { return Math.max(m, r.valor); }, 0);
+  funil.forEach(function(r) {
+    var pct = maxV > 0 ? (r.valor / maxV * 100).toFixed(2) : 0;
+    var row = document.createElement("div");
+    row.className = "bar-row";
+    row.setAttribute("role", "img");
+    row.setAttribute("aria-label", r.label + ": " + fBRL(r.valor));
+    row.innerHTML =
+      '<div class="bar-lbl" title="' + r.status + '">' + r.label + '</div>' +
+      '<div class="bar-track">' +
+        '<div class="bar-fill bg-' + r.grupo + '" style="width:' + pct + '%"></div>' +
+      '</div>' +
+      '<div class="bar-val">' + fBRL(r.valor) + '</div>';
+    el.appendChild(row);
+  });
+}
+
+/* ─── DONUT ───────────────────────────────────────────── */
+function renderDonut(D, CALMO, PREV) {
+  var svg = document.getElementById("donut-svg");
+  var legend = document.getElementById("dlegend");
+  svg.innerHTML = "";
+  legend.innerHTML = "";
+
+  var TIPOS = ["Prefeitura", "Cliente Direto"];
+  var COR = {"Prefeitura": "#A78BFA", "Cliente Direto": "#25E0F0"};
+  var R_OUT = 88, R_IN = 55, GAP = 0.055;
+
+  var defs = document.createElementNS("http://www.w3.org/2000/svg", "defs");
+  TIPOS.forEach(function(k, i) {
+    var f = document.createElementNS("http://www.w3.org/2000/svg", "filter");
+    f.id = "gf" + i;
+    f.setAttribute("x", "-60%"); f.setAttribute("y", "-60%");
+    f.setAttribute("width", "220%"); f.setAttribute("height", "220%");
+    var b = document.createElementNS("http://www.w3.org/2000/svg", "feGaussianBlur");
+    b.setAttribute("stdDeviation", "4"); b.setAttribute("in", "SourceGraphic");
+    f.appendChild(b); defs.appendChild(f);
+  });
+  svg.appendChild(defs);
+
+  function donutArc(ro, ri, a0, a1) {
+    function pt(r, a) { return [+(Math.cos(a)*r).toFixed(4), +(Math.sin(a)*r).toFixed(4)]; }
+    var p0o=pt(ro,a0), p1o=pt(ro,a1), p1i=pt(ri,a1), p0i=pt(ri,a0);
+    var la = (a1-a0) > Math.PI ? 1 : 0;
+    return ["M",p0o,"A",ro,ro,0,la,1,p1o,"L",p1i,"A",ri,ri,0,la,0,p0i,"Z"].join(" ");
+  }
+
+  var totalCart = D.total_carteira || 0;
+  var segs = TIPOS.map(function(k) { return {key:k, val:(D.tipos[k]||{total:0}).total}; });
+  var totalSeg = segs.reduce(function(s, d) { return s + d.val; }, 0);
+  var ang = -Math.PI / 2;
+  segs.forEach(function(s) {
+    var por = totalSeg > 0 ? s.val/totalSeg : 1/segs.length;
+    var span = por * (2*Math.PI - GAP*segs.length);
+    s.a0 = ang + GAP/2; s.a1 = ang + span + GAP/2;
+    ang += span + GAP;
+  });
+
+  segs.forEach(function(s, i) {
+    var col = COR[s.key];
+    var d = donutArc(R_OUT, R_IN, s.a0, s.a1);
+
+    /* Camada glow (só opacidade anima — ângulo fixo) */
+    var glow = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    glow.setAttribute("d", d);
+    glow.setAttribute("fill", col);
+    glow.setAttribute("filter", "url(#gf"+i+")");
+    if (!CALMO && !RM) { glow.className = "seg-glow sg"+i; }
+    else { glow.style.opacity = "0.18"; }
+    svg.appendChild(glow);
+
+    /* Segmento interativo — clique → notifica Python */
+    var path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", d);
+    path.setAttribute("fill", col+"28");
+    path.setAttribute("stroke", col);
+    path.setAttribute("stroke-width", "2.5");
+    path.setAttribute("role", "button");
+    path.setAttribute("tabindex", "0");
+    path.setAttribute("aria-label", s.key + ": " + fBRL(s.val) + ". Enter para detalhar.");
+    path.classList.add("seg-base");
+    path.style.cursor = "pointer";
+    path.addEventListener("click", function() { notifyClick(s.key); });
+    path.addEventListener("keydown", function(e) {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); notifyClick(s.key); }
+    });
+    svg.appendChild(path);
+  });
+
+  /* Centro — total com count-up */
+  var cg = document.createElementNS("http://www.w3.org/2000/svg", "g");
+  var cCirc = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+  cCirc.setAttribute("r", "53"); cCirc.setAttribute("fill", "transparent");
+  cg.appendChild(cCirc);
+  var tLbl = document.createElementNS("http://www.w3.org/2000/svg", "text");
+  tLbl.setAttribute("y", "-12"); tLbl.setAttribute("text-anchor", "middle");
+  tLbl.classList.add("ct-lbl"); tLbl.textContent = "TOTAL";
+  cg.appendChild(tLbl);
+  var tVal = document.createElementNS("http://www.w3.org/2000/svg", "text");
+  tVal.setAttribute("y", "8"); tVal.setAttribute("text-anchor", "middle");
+  tVal.classList.add("ct-val"); tVal.id = "ctotal";
+  tVal.textContent = fBRL(0);
+  cg.appendChild(tVal);
+  svg.appendChild(cg);
+
+  /* Count-up: de PREV → totalCart */
+  (function countUp(from, to) {
+    if (RM || CALMO || Math.abs(to - from) < 0.01) {
+      document.getElementById("ctotal").textContent = fBRL(to); return;
+    }
+    var dur = 900, t0 = performance.now();
+    (function step(t) {
+      var p = Math.min(1, (t-t0)/dur), e = 1 - Math.pow(1-p, 3);
+      document.getElementById("ctotal").textContent = fBRL(from + (to-from)*e);
+      if (p < 1) requestAnimationFrame(step);
+    })(t0);
+  })(PREV || 0, totalCart);
+
+  /* Legenda */
+  TIPOS.forEach(function(k) {
+    var btn = document.createElement("button");
+    btn.className = "leg-item";
+    btn.setAttribute("aria-label", "Detalhar " + k);
+    btn.innerHTML = '<div class="leg-dot" style="background:'+COR[k]+'"></div><span>'+k+'</span>';
+    btn.addEventListener("click", function() { notifyClick(k); });
+    legend.appendChild(btn);
+  });
+}
+
+/* ── Recebe dados do Streamlit ────────────────────────── */
+window.addEventListener("message", function(e) {
+  if (!e.data || typeof e.data !== "object") return;
+  if (e.data.type !== "streamlit:render") return;
+  var args = e.data.args || {};
+  var D     = args.data      || {total_carteira:0, funil:[], tipos:{}};
+  var CALMO = !!args.modo_calmo;
+  var PREV  = args.prev_total || 0;
+  render(D, CALMO, PREV);
+  sendMsg("streamlit:setFrameHeight", {height: 440});
+});
+</script>
+</body>
+</html>
